@@ -5,6 +5,10 @@ Given: V1=1.0∠0, PD2=0.9, QD2=0.5, PG3=1.3, V3=1.01
 Lines: Z12=j0.1, Z13=j0.25, Z23=j0.2
 Epsilon=0.01, k=0
 Flat start: σ1=0, σ2=0, V2=1
+
+---Need to update this to handle n buses
+
+Author: Jeff Dinsmore
 """
 
 import numpy as np
