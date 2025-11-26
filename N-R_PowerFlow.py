@@ -30,9 +30,9 @@ SLACK, PQ, PV = 0, 1, 2
 
 # --- system data (per-unit) ---
 buses = {
-    1: {"type": SLACK, "V": 1.0,  "delta": 0.0,    "PG": 0.0, "PD": 0.0, "QG": 0.0, "QD": 0.0},
-    2: {"type": PQ,    "V": 1.0,  "delta": 0.0,    "PG": 0.0, "PD": 0.9, "QG": 0.0, "QD": 0.5},
-    3: {"type": PV,    "V": 1.01, "delta": 0.0,    "PG": 1.3, "PD": 0.0, "QG": 0.0, "QD": 0.0},
+    1: {"type": SLACK, "V": 1.0,  "δ": 0.0,    "PG": 0.0, "PD": 0.0, "QG": 0.0, "QD": 0.0},
+    2: {"type": PQ,    "V": 1.0,  "δ": 0.0,    "PG": 0.0, "PD": 0.9, "QG": 0.0, "QD": 0.5},
+    3: {"type": PV,    "V": 1.01, "δ": 0.0,    "PG": 1.3, "PD": 0.0, "QG": 0.0, "QD": 0.0},
 }
 
 # --- flat start values ---
@@ -75,9 +75,11 @@ def tabulate_results(data):
 
 # build Y-bus
 Ybus = build_Ybus(Z)
+print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
 
 # extract diagonal elements
 Y_diag = np.diag(Ybus)
+print(f"[INFO] Your Y-diagonals are: {Y_diag}\n")
 
 # Extract off-diagonal Y values (i ≠ j)
 off_diagonals = []
@@ -91,15 +93,19 @@ for i in range(n):
 
 # Convert to array for clarity (bus pair, magnitude, angle)
 Y_off = np.array(off_diagonals, dtype=object)
+print(f"[INFO] Your Ybus off diaganol elements are: \n{Y_off}\n")
 
 # convert to polar form (magnitude, angle in radians)
 Y_polar_diag = np.array([(abs(y), np.angle(y)) for y in Y_diag])
+print(f"[INFO] Your Ybus polar diaganols are: \n{Y_polar_diag}\n")
+
 Y_polar_off = np.array([(abs(y), np.angle(y)) for y in Y_diag])
+print(f"[INFO] Your Ybus polar off diaganols are: \n{Y_polar_off}\n")
 
 tabulate_results(buses)
-print(Ybus)
-print("Off diag", Y_off)
-print("Y polar", np.round(np.cos(np.pi/2),8))
+#print(Ybus)
+#print("Off diag", Y_off)
+#print("Y polar", np.round(np.cos(np.pi/2),8))
 print("radians", degreeToRadians(90))
 # optional: if you want to view angles in degrees
 # Y_polar_deg = np.array([(abs(y), np.degrees(np.angle(y))) for y in Y_diag])
