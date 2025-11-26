@@ -4,6 +4,8 @@
 
 #### Author: Jeff Dinsmore
 
+#### Licence: GPL-3.0 license
+
 ## Installation
 
 #### The Following commands will be used in the terminal using PowerShell or Bash:
