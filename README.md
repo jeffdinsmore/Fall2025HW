@@ -1,4 +1,4 @@
-# Newton Raphson PowerFlow.py
+# N-R_PowerFlow.py
 
 #### Created: 11/10/2025
 
