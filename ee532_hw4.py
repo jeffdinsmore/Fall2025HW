@@ -11,7 +11,7 @@ w   = 0.01                 # m (translator width)
 d   = 0.04                 # m (depth into page)
 
 # Position from 0 to just under 10 mm (avoid division by zero at x = 0 and x = w)
-x = np.linspace(1e-6, 0.01 * 0.999, 300)  # m
+x = np.linspace(0, 0.01, 300)  # m
 x_mm = x * 1000                           # for plotting
 
 # --- Reluctances for coil 1 self-flux path ---
