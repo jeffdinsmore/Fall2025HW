@@ -91,7 +91,7 @@ def load_system_file(filename):
 
 # --- system data (per-unit) ---
 baseMVA, buses, name_map = load_system_file("FiveBus_PQ")
-print(f"buses-----------------\n{buses}\n")
+#print(f"buses-----------------\n{buses}\n")
 
 
 def load_line_data(filename, bus_name_to_num):
@@ -141,7 +141,6 @@ TL = 3      # Number of Transmission lines
 
 # --- bus type enum ---
 SLACK, PQ, PV = 0, 1, 2
-
 
 n = len(buses)       # Number of busses
 
@@ -199,11 +198,11 @@ def tabulate_results(data):
 
 # build Y-bus -----------------------------------------------
 Ybus = build_Ybus(Z)
-print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
+#print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
 
 # extract diagonal elements ---------------------------------
 Y_diag = np.diag(Ybus)
-print(f"[INFO] Your Y-diagonals are: {Y_diag}\n")
+#print(f"[INFO] Your Y-diagonals are: {Y_diag}\n")
 
 # Extract off-diagonal Y values (i ≠ j) ----------------------
 off_diagonals = []
@@ -294,7 +293,7 @@ class PowerVariables:
             self.Q_spec.append(QG - QD)
         self.Q_spec = np.array(self.Q_spec, dtype=float)
 
-
+    # Setting up calculations for mismatch matrix
     def build_calc_arrays(self, buses, Ybus):
         """
         Compute reduced P_calc and Q_calc from Ybus and current bus voltages.
@@ -339,84 +338,40 @@ class PowerVariables:
         self.P_calc = np.array([P_full[b - 1] for b in self.non_slack_buses], dtype=float)
         self.Q_calc = np.array([Q_full[b - 1] for b in self.pq_buses],       dtype=float)
 
+    def build_mismatch_vector(self):
+        """
+        Build the NR mismatch vector Δ = [ΔP; ΔQ] using the
+        reduced arrays stored in this object.
+
+        Requires:
+            self.P_spec, self.Q_spec
+            self.P_calc, self.Q_calc
+
+        Returns:
+            mismatch : column vector (ΔP followed by ΔQ)
+        """
+        if self.P_spec is None or self.P_calc is None:
+            raise ValueError("P_spec or P_calc not set. Call build_spec_arrays and build_calc_arrays first.")
+        if self.Q_spec is None or self.Q_calc is None:
+            raise ValueError("Q_spec or Q_calc not set. Call build_spec_arrays and build_calc_arrays first.")
+
+        # ΔP for non-slack buses
+        deltaP = self.P_spec - self.P_calc
+
+        # ΔQ for PQ buses
+        deltaQ = self.Q_spec - self.Q_calc
+
+        # stack into a column vector [ΔP; ΔQ]
+        mismatch = np.concatenate([deltaP, deltaQ]).reshape(-1, 1)
+        return mismatch
 
 #print(dir(PowerVariables))
 
-# Setting up calculations for mismatch matrix
-def build_calc_arrays(Ybus):
-    """
-    Compute reduced P_calc and Q_calc from Ybus and current bus voltages.
-
-    Uses:
-      - buses (global dict)
-      - build_spec_arrays() to get non-slack and PQ bus lists
-
-    Returns:
-      P_calc : array for non-slack buses (same order as P_spec)
-      Q_calc : array for PQ buses       (same order as Q_spec)
-    """
-    # get bus sets and ensure P_spec/Q_spec are built (we reuse the mapping)
-    non_slack_bus_nums, pq_bus_nums = build_spec_arrays()
-
-    # full complex voltage vector
-    V = np.zeros(n, dtype=complex)
-    for b, data in buses.items():
-        V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-
-    G = Ybus.real
-    B = Ybus.imag
-    Vm = np.abs(V)
-    Va = np.angle(V)
-
-    P_full = np.zeros(n)
-    Q_full = np.zeros(n)
-
-    for i in range(n):
-        for k in range(n):
-            theta = Va[i] - Va[k]
-            VkVi  = Vm[i] * Vm[k]
-            P_full[i] += VkVi * (G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta))
-            Q_full[i] += VkVi * (G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta))
-
-    # reduce to match spec arrays
-    P_calc = np.array([P_full[b - 1] for b in non_slack_bus_nums], dtype=float)
-    Q_calc = np.array([Q_full[b - 1] for b in pq_bus_nums],       dtype=float)
-    print("P_calc (reduced) =", P_calc)
-    print("Q_calc (reduced) =", Q_calc)
-    return P_calc, Q_calc, non_slack_bus_nums, pq_bus_nums
-
-#
-#print("P_calc =", P_calc)
-#print("Q_calc =", Q_calc)
-
-# Build Mismatch matrix
-def build_mismatch_matrix(P_spec, Q_spec, P_calc, Q_calc):
-    """
-    Build the mismatch matrix Δ = [ΔP; ΔQ].
-
-    Inputs:
-      P_spec : reduced P_spec array (non-slack buses)
-      Q_spec : reduced Q_spec array (PQ buses)
-      P_calc : reduced P_calc array (non-slack buses)
-      Q_calc : reduced Q_calc array (PQ buses)
-
-    Returns:
-      mismatch : column vector [ΔP; ΔQ]
-    """
-
-    # ΔP for non-slack buses
-    deltaP = P_spec - P_calc
-
-    # ΔQ for PQ buses
-    deltaQ = Q_spec - Q_calc
-
-    # stack into a column vector
-    mismatch = np.concatenate([deltaP, deltaQ]).reshape(-1, 1)
-    return mismatch
 
 pv = PowerVariables()      # create the object
 pv.build_spec_arrays(buses)  # call the method
 pv.build_calc_arrays(buses, Ybus)
+#pv.build_mismatch_vector()
 
 print("P_spec =", pv.P_spec)
 print("Q_spec =", pv.Q_spec)
@@ -424,6 +379,7 @@ print("non-slack =", pv.non_slack_buses)
 print("pq =", pv.pq_buses)
 print("P_calc =", pv.P_calc)
 print("Q_calc =", pv.Q_calc)
+print("Vectors", pv.build_mismatch_vector())
 
 #build_mismatch_matrix(Ybus)
 #calc_power_injections(Ybus, V)
