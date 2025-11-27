@@ -20,8 +20,10 @@ import matplotlib.pyplot as plt
 from pprint import pprint as pp
 
 # --- tolerances / iteration ---
-EPS = 0.01  # mismatch tolerance (pu)
+EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12, 1e-13]  # mismatch tolerance (pu)
 #k = 0       # NR iteration counter
+MAX_ITERS = 20
+
 
 SLACK, PQ, PV = 0, 1, 2
 
@@ -91,7 +93,7 @@ def load_system_file(filename):
 
 # --- system data (per-unit) ---
 baseMVA, buses, name_map = load_system_file("FiveBus_PQ")
-print(f"buses-----------------\n{buses}\n")
+#print(f"buses-----------------\n{buses}\n")
 
 
 def load_line_data(filename, bus_name_to_num):
@@ -321,10 +323,10 @@ class PowerVariables:
         
         for b, data in buses.items():
             V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-        print("-------------------------\n", V)
+
         G = Ybus.real
         B = Ybus.imag
-        print(f"\nG+jB = {G} + j{B}\n")
+
         Vm = np.abs(V)
         Va = np.angle(V)
 
@@ -343,6 +345,7 @@ class PowerVariables:
         self.P_calc = np.array([P_full[b - 1] for b in self.non_slack_buses], dtype=float)
         self.Q_calc = np.array([Q_full[b - 1] for b in self.pq_buses],       dtype=float)
 
+    # Build mismatch matrix ------------------------------------------------------------------------
     def build_mismatch_vector(self):
         """
         Build the NR mismatch vector Δ = [ΔP; ΔQ] using the
@@ -370,7 +373,8 @@ class PowerVariables:
         mismatch = np.concatenate([deltaP, deltaQ]).reshape(-1, 1)
         return mismatch
 
-    def build_unknown_vector(self, buses):
+    # Build unknown matrix -----------------------------------------------------------------------------------
+    def build_unknown_state_vector(self, buses):
         """
         Build the NR state (unknown) vector x = [δ_non_slack; V_PQ].
 
@@ -401,25 +405,362 @@ class PowerVariables:
         # optional: store it on the object
         self.state_vector = x
         return x
+    
+    # Build J1 for the jacobian matrix ---------------------------------------------------------
+    def build_J1(self, buses, Ybus):
+        """
+        Build J1 = dP/d(delta) for non-slack buses.
 
+        Rows: non-slack buses
+        Cols: non-slack buses
+
+        Returns:
+            J1 : numpy array (ns × ns)
+        """
+        ns = len(self.non_slack_buses)
+        J1 = np.zeros((ns, ns), dtype=float)
+
+        # Access Ybus terms
+        G = Ybus.real
+        B = Ybus.imag
+
+        # Build complex voltage vector first
+        # (needed for angles and |V|)
+        n_buses = len(buses)
+        V_complex = np.zeros(n_buses, dtype=complex)
+        for b, data in buses.items():
+            V_complex[b - 1] = data["V"] * np.exp(1j * data["δ"])
+
+        Vm = np.abs(V_complex)
+        Va = np.angle(V_complex)
+
+        # Also need Q_calc values indexed by bus number
+        # P_calc/Q_calc in your object are reduced vectors,
+        # so map them back to full-bus numbering:
+        Q_full = np.zeros(n_buses)
+        for idx, b in enumerate(self.pq_buses):
+            Q_full[b - 1] = self.Q_calc[idx]   # only PQ buses have Q_calc
+
+        for idx_i, bus_i in enumerate(self.non_slack_buses):
+            i = bus_i - 1
+            Vi = Vm[i]
+            Qi = Q_full[i]
+
+            for idx_k, bus_k in enumerate(self.non_slack_buses):
+                k = bus_k - 1
+                Vk = Vm[k]
+
+                if i == k:
+                    # Diagonal
+                    J1[idx_i, idx_k] = -Qi - B[i, i] * Vi * Vi
+                else:
+                    # Off-diagonal
+                    theta = Va[i] - Va[k]
+                    J1[idx_i, idx_k] = (
+                        Vi * Vk * (G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta))
+                    )
+
+        return J1
+    
+    # J2 of the Jacobian Matrix -------------------------------------------------------------------------
+    def build_J2(self, buses, Ybus):
+        """
+        Build J2 = dP/dV for NR power flow.
+
+        Rows  : non-slack buses
+        Cols  : PQ buses
+
+        Returns:
+            J2 : numpy array (ns × npq)
+        """
+        ns  = len(self.non_slack_buses)
+        npq = len(self.pq_buses)
+        J2 = np.zeros((ns, npq), dtype=float)
+
+        # Real/imag parts of Ybus
+        G = Ybus.real
+        B = Ybus.imag
+
+        # Build complex voltages
+        n_buses = len(buses)
+        V_complex = np.zeros(n_buses, dtype=complex)
+        for b, data in buses.items():
+            V_complex[b - 1] = data["V"] * np.exp(1j * data["δ"])
+
+        Vm = np.abs(V_complex)
+        Va = np.angle(V_complex)
+
+        # Need P_calc mapped into full bus indexing
+        P_full = np.zeros(n_buses)
+        for idx, b in enumerate(self.non_slack_buses):
+            # P_calc is stored in same order as non-slack buses
+            P_full[b - 1] = self.P_calc[idx]
+
+        # Build J2
+        for row_idx, bus_i in enumerate(self.non_slack_buses):
+            i = bus_i - 1
+            Vi = Vm[i]
+
+            for col_idx, bus_k in enumerate(self.pq_buses):
+                k = bus_k - 1
+                Vk = Vm[k]
+
+                theta = Va[i] - Va[k]
+
+                if i == k:
+                    # Diagonal only if that bus is PQ
+                    P_i = P_full[i]
+                    J2[row_idx, col_idx] = (P_i / Vi) + G[i, i] * Vi
+                else:
+                    # Off-diagonal
+                    J2[row_idx, col_idx] = Vi * (
+                        G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta)
+                    )
+
+        return J2
+    
+    # J3 for the Jacobian Matrix ---------------------------------------------------------------
+    def build_J3(self, buses, Ybus):
+        """
+        Build J3 = dQ/d(delta)
+
+        Rows: PQ buses
+        Cols: non-slack buses
+
+        Returns:
+            J3 : numpy array (npq × ns)
+        """
+        npq = len(self.pq_buses)
+        ns  = len(self.non_slack_buses)
+        J3 = np.zeros((npq, ns), dtype=float)
+
+        G = Ybus.real
+        B = Ybus.imag
+
+        # Build complex voltage vector
+        n_buses = len(buses)
+        V_complex = np.zeros(n_buses, dtype=complex)
+        for b, data in buses.items():
+            V_complex[b - 1] = data["V"] * np.exp(1j * data["δ"])
+
+        Vm = np.abs(V_complex)
+        Va = np.angle(V_complex)
+
+        # Need P_calc mapped to full bus indexing
+        P_full = np.zeros(n_buses)
+        for idx, b in enumerate(self.non_slack_buses):
+            P_full[b - 1] = self.P_calc[idx]  # only non-slack buses have P_calc values
+
+        # Build J3
+        for row_idx, bus_i in enumerate(self.pq_buses):
+            i = bus_i - 1
+            Vi = Vm[i]
+
+            for col_idx, bus_k in enumerate(self.non_slack_buses):
+                k = bus_k - 1
+                Vk = Vm[k]
+
+                theta = Va[i] - Va[k]
+
+                if i == k:
+                    # Diagonal entry (PQ bus only)
+                    P_i = P_full[i]
+                    J3[row_idx, col_idx] = P_i - G[i, i] * Vi * Vi
+                else:
+                    # Off-diagonal
+                    J3[row_idx, col_idx] = -Vi * Vk * (
+                        G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta)
+                    )
+
+        return J3
+    
+    # J4 for the Jacobian Matrix ---------------------------------------------------------------
+    def build_J4(self, buses, Ybus):
+        """
+        Build J4 = dQ/dV for PQ buses.
+
+        Rows: PQ buses
+        Cols: PQ buses
+
+        Returns:
+            J4 : numpy array (npq × npq)
+        """
+        npq = len(self.pq_buses)
+        J4 = np.zeros((npq, npq), dtype=float)
+
+        G = Ybus.real
+        B = Ybus.imag
+
+        # Build complex voltage vector
+        n_buses = len(buses)
+        V_complex = np.zeros(n_buses, dtype=complex)
+        for b, data in buses.items():
+            V_complex[b - 1] = data["V"] * np.exp(1j * data["δ"])
+
+        Vm = np.abs(V_complex)
+        Va = np.angle(V_complex)
+
+        # Need Q_calc in full bus indexing
+        Q_full = np.zeros(n_buses)
+        for idx, b in enumerate(self.pq_buses):
+            Q_full[b - 1] = self.Q_calc[idx]
+
+        for row_idx, bus_i in enumerate(self.pq_buses):
+            i = bus_i - 1
+            Vi = Vm[i]
+            Qi = Q_full[i]
+
+            for col_idx, bus_k in enumerate(self.pq_buses):
+                k = bus_k - 1
+                Vk = Vm[k]
+
+                theta = Va[i] - Va[k]
+
+                if i == k:
+                    # Diagonal PQ bus
+                    J4[row_idx, col_idx] = (Qi / Vi) - B[i, i] * Vi
+                else:
+                    # Off-diagonal
+                    J4[row_idx, col_idx] = Vi * (
+                        G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta)
+                    )
+
+        return J4
+
+    # Full Jacobian Matrix build ---------------------------------------------------------------
+    def build_jacobian(self, buses, Ybus):
+        """
+        Build the full NR Jacobian:
+        
+            J = [ J1   J2
+                  J3   J4 ]
+
+        Returns:
+            J : full Jacobian matrix (numpy array)
+        """
+        # Build the four blocks
+        J1 = self.build_J1(buses, Ybus)
+        J2 = self.build_J2(buses, Ybus)
+        J3 = self.build_J3(buses, Ybus)
+        J4 = self.build_J4(buses, Ybus)
+
+        # Stack horizontally (J1 with J2, J3 with J4)
+        top = np.hstack((J1, J2))
+        bottom = np.hstack((J3, J4))
+
+        # Stack vertically into the full Jacobian
+        J = np.vstack((top, bottom))
+        return J
+
+    # Solve for unknown state matrix ---------------------------------------------------------------
+    def solve_for_state_update(self, buses, Ybus):
+        """
+        Build mismatch and Jacobian, then solve for Δx.
+
+        Δx = [Δδ_non_slack; ΔV_PQ]
+
+        Returns:
+            delta_x : 1D numpy array (same length as state vector)
+        """
+        # Make sure spec/calc are up to date
+        self.build_spec_arrays(buses)
+        self.build_calc_arrays(buses, Ybus)
+
+        # Build mismatch vector (column)
+        mismatch = self.build_mismatch_vector()   # shape (ns+npq, 1)
+
+        # Build full Jacobian
+        J = self.build_jacobian(buses, Ybus)
+
+        # Solve J * Δx = mismatch  (flatten mismatch to 1D)
+        delta_x = np.linalg.solve(J, mismatch.flatten())
+
+        # Optional: store it
+        self.delta_x = delta_x
+        return delta_x
+    
+    # Apply the solved unknown state to new state matrix ---------------------------------------------------------------
+    def apply_state_update(self, buses, delta_x):
+        """
+        Apply Δx to update bus angles and voltages.
+
+        delta_x is ordered as:
+            [Δδ for non-slack buses,
+             ΔV for PQ buses]
+        """
+        ns = len(self.non_slack_buses)
+        npq = len(self.pq_buses)
+
+        d_delta = delta_x[:ns]
+        d_V     = delta_x[ns:ns+npq]
+
+        # Update angles for non-slack buses
+        for idx, b in enumerate(self.non_slack_buses):
+            buses[b]["δ"] += d_delta[idx]
+
+        # Update voltages for PQ buses
+        for idx, b in enumerate(self.pq_buses):
+            buses[b]["V"] += d_V[idx]
 
 #print(dir(PowerVariables))
 
 
 pv = PowerVariables()      # create the object
-pv.build_spec_arrays(buses)  # call the method
+"""pv.build_spec_arrays(buses)  # call the method
 pv.build_calc_arrays(buses, Ybus)
+mismatch = pv.build_mismatch_vector()
 #pv.build_mismatch_vector()
 
-print("P_spec =", pv.P_spec)
-print("Q_spec =", pv.Q_spec)
-print("non-slack =", pv.non_slack_buses)
-print("pq =", pv.pq_buses)
-print("P_calc =", pv.P_calc)
-print("Q_calc =", pv.Q_calc)
-print("Vectors", pv.build_mismatch_vector())
-print("state", pv.build_unknown_vector(buses))
+print("\nP_spec =", pv.P_spec)
+print("\nQ_spec =", pv.Q_spec)
+print("\nnon-slack =", pv.non_slack_buses)
+print("\npq =", pv.pq_buses)
+print("\nP_calc =", pv.P_calc)
+print("\nQ_calc =", pv.Q_calc)
+print("\nMismatch Vectors", mismatch)
+print("Initial max mismatch:", np.max(np.abs(mismatch)))
+print("\nUnknown state", pv.build_unknown_state_vector(buses))
+#print("\nFull Jacobian matrix", pv.build_jacobian(buses, Ybus))
+display_Ybus(pv.build_jacobian(buses, Ybus))
+"""
 
+delta_x = pv.solve_for_state_update(buses, Ybus)
+pv.apply_state_update(buses, delta_x)
+print("\nUnknown state", pv.build_unknown_state_vector(buses))
+print("\nΔx:", delta_x)
+
+for tol in EPS:
+    num = -1
+    for k in range(MAX_ITERS):
+        num+=1
+        # 1–3: build spec, calc, mismatch
+        pv.build_spec_arrays(buses)
+        pv.build_calc_arrays(buses, Ybus)
+        mismatch = pv.build_mismatch_vector()   # column vector
+
+        # 4: convergence check
+        max_mis = np.max(np.abs(mismatch))
+        print(f"Iter {k}: max mismatch = {max_mis:.6e}")
+        if max_mis < tol:
+            print("Converged!", num, tol, max_mis)
+            break
+
+        # 5: build Jacobian
+        J = pv.build_jacobian(buses, Ybus)
+
+        # 6: solve for Δx
+        delta_x = np.linalg.solve(J, mismatch.flatten())
+
+        # 7: apply update to buses
+        pv.apply_state_update(buses, delta_x)
+        
+    else:
+        print("Did not converge within MAX_ITERS")
+
+#print("\nJ1 Jacobian matrix", pv.build_J1(buses, Ybus))
+#print("\nJ2 Jacobian matrix", pv.build_J2(buses, Ybus))
+#print("\nJ3 Jacobian matrix", pv.build_J3(buses, Ybus))
+#print("\nJ4 Jacobian matrix", pv.build_J4(buses, Ybus))
 
 #display_Ybus(Ybus)
 #build_mismatch_matrix(Ybus)
