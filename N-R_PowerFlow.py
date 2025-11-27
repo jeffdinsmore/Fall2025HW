@@ -21,7 +21,8 @@ from pprint import pprint as pp
 import copy
 
 # --- tolerances / iteration ---
-EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12, 1e-13]  # mismatch tolerance (pu)
+EPS = [1e-6, 1e-14]
+#EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12, 1e-13]  # mismatch tolerance (pu)
 #k = 0       # NR iteration counter
 MAX_ITERS = 20
 
@@ -325,7 +326,7 @@ class PowerVariables:
         
         for b, data in buses.items():
             V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-
+            print("-----------------", V[b-1], data["δ"])
         G = Ybus.real
         B = Ybus.imag
 
