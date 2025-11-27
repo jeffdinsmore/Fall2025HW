@@ -23,17 +23,125 @@ from pprint import pprint as pp
 EPS = 0.01  # mismatch tolerance (pu)
 #k = 0       # NR iteration counter
 
+SLACK, PQ, PV = 0, 1, 2
+
+def load_system_file(filename):
+    """
+    Parse the FiveBus_PQ-style file and build the buses dict.
+
+    Returns:
+        baseMVA
+        buses: {bus_num: {...}}
+        bus_name_to_num: {"Alan":1, "Betty":2, ...}
+    """
+    buses = {}
+    bus_name_to_num = {}
+    baseMVA = None
+
+    with open(filename, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("%"):
+                continue
+
+            parts = line.split()
+
+            # SYSTEM  FiveBus_PQ   100   0.05
+            if parts[0].upper() == "SYSTEM":
+                baseMVA = float(parts[2])
+
+            # BUS  name  type  volts  Pgen  Qgen  Pload  Qload  Qcap
+            elif parts[0].upper() == "BUS":
+                _, name, btype, V, PG, QG, Pload, Qload, Qcap = parts
+
+                bus_num = len(buses) + 1
+                bus_name_to_num[name] = bus_num
+
+                if btype.upper() == "SL":
+                    btype_code = SLACK
+                elif btype.upper() == "PQ":
+                    btype_code = PQ
+                elif btype.upper() == "PV":
+                    btype_code = PV
+                else:
+                    raise ValueError(f"Unknown bus type {btype} for bus {name}")
+
+                V = float(V)
+
+                # convert MW/MVAr to per-unit on baseMVA
+                PG = float(PG) / baseMVA
+                QG = float(QG) / baseMVA
+                PD = float(Pload) / baseMVA
+                QD = float(Qload) / baseMVA
+                # Qcap is ignored
+
+                buses[bus_num] = {
+                    "name": name,
+                    "type": btype,
+                    "V": V,
+                    "δ": 0.0,
+                    "PG": PG,
+                    "QG": QG,
+                    "PD": PD,
+                    "QD": QD,
+                }
+
+    return baseMVA, buses, bus_name_to_num
+
+
+# --- system data (per-unit) ---
+baseMVA, buses, name_map = load_system_file("FiveBus_PQ")
+print(f"buses-----------------\n{buses}\n")
+
+
+def load_line_data(filename, bus_name_to_num):
+    """
+    Parse LINE data from the system file and build the Z dict.
+
+    Z[(i, j)] = R + jX   where i, j are *bus numbers* (1-based, ints)
+
+    Assumes:
+      - filename is like 'FiveBus_PQ'
+      - bus_name_to_num maps bus names ('Alan') -> bus numbers (1, 2, ...)
+      - Rse, Xse are already in per-unit
+    """
+    Z = {}
+
+    with open(filename, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("%"):
+                continue
+
+            parts = line.split()
+
+            if parts[0].upper() == "LINE":
+                # LINE  from  to  Rse  Xse  Gsh  Bsh  Rating
+                _, from_name, to_name, Rse, Xse, Gsh, Bsh, rating = parts
+
+                i = bus_name_to_num[from_name]
+                j = bus_name_to_num[to_name]
+
+                R = float(Rse)
+                X = float(Xse)
+
+                # store only one direction; build_Ybus will handle symmetry
+                if i > j:
+                    i, j = j, i
+
+                Z[(i, j)] = R + 1j * X
+
+    return Z
+
+# --- line impedances (pu) ---
+Z = load_line_data("FiveBus_PQ", name_map)
+#print(f"Z----------------------\n{Z1}\n")
+
 TL = 3      # Number of Transmission lines
 
 # --- bus type enum ---
 SLACK, PQ, PV = 0, 1, 2
 
-# --- system data (per-unit) ---
-buses = {
-    1: {"type": SLACK, "V": 1.04,  "δ": 0.0},
-    2: {"type": PQ,    "V": 1.0,  "δ": 0.0,    "PG": 0.5, "QG": 1.0},
-    3: {"type": PV,    "V": 1.04, "δ": 0.0,    "PD": 1.5},
-}
 
 n = len(buses)       # Number of busses
 
@@ -41,15 +149,10 @@ n = len(buses)       # Number of busses
 delta = np.array([0.0, 0.0])   # σ2, σ3 (bus angles in radians excluding slack)
 V = np.array([1.0, 1.01])      # V2, V3 magnitudes
 
-# --- line impedances (pu) ---
-Z = {
-    (1, 2): 1j * 0.1,
-    (1, 3): 1j * 0.25,
-    (2, 3): 1j * 0.2,
-}
+
 
 # store symmetrically for convenience
-Z.update({(j, i): z for (i, j), z in list(Z.items())})
+#Z.update({(j, i): z for (i, j), z in list(Z.items())})
 
 def degreeToRadians(degree):
     radians = np.pi * degree / 180
@@ -165,13 +268,13 @@ class PowerVariables:
             self.non_slack_buses
             self.pq_buses
         """
-
+        
         bus_nums = sorted(buses.keys())
 
         # identify bus types
-        slack_bus = next(b for b in bus_nums if buses[b]["type"] == SLACK)
+        slack_bus = next(b for b in bus_nums if buses[b]["type"] == "SL")
         self.non_slack_buses = [b for b in bus_nums if b != slack_bus]
-        self.pq_buses        = [b for b in bus_nums if buses[b]["type"] == PQ]
+        self.pq_buses        = [b for b in bus_nums if buses[b]["type"] == "PQ"]
 
         # --- build reduced P_spec (PG − PD for non-slack buses) ---
         self.P_spec = []
