@@ -18,6 +18,7 @@ import pandas as pd
 from tabulate import tabulate
 import matplotlib.pyplot as plt
 from pprint import pprint as pp
+import copy
 
 # --- tolerances / iteration ---
 EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12, 1e-13]  # mismatch tolerance (pu)
@@ -142,7 +143,8 @@ Z = load_line_data("FiveBus_PQ", name_map)
 # --- flat start values ---
 delta = np.array([0.0, 0.0])   # σ2, σ3 (bus angles in radians excluding slack)
 V = np.array([1.0, 1.01])      # V2, V3 magnitudes
-
+# after loading buses from the file and setting flat start δ = 0, V from file
+buses_flat_start = copy.deepcopy(buses)
 
 
 # store symmetrically for convenience
@@ -724,19 +726,28 @@ print("\nUnknown state", pv.build_unknown_state_vector(buses))
 display_Ybus(pv.build_jacobian(buses, Ybus))
 """
 
-delta_x = pv.solve_for_state_update(buses, Ybus)
-pv.apply_state_update(buses, delta_x)
-print("\nUnknown state", pv.build_unknown_state_vector(buses))
-print("\nΔx:", delta_x)
+#delta_x = pv.solve_for_state_update(buses, Ybus)
+#pv.apply_state_update(buses, delta_x)
+#print("\nUnknown state", pv.build_unknown_state_vector(buses))
+#print("\nΔx:", delta_x)
 
 for tol in EPS:
     num = -1
+    print("\n=== Running NR with EPS =", tol, "===")
+
+    # reset buses to flat start
+    buses = copy.deepcopy(buses_flat_start)
+
+    pv = PowerVariables()
     for k in range(MAX_ITERS):
         num+=1
         # 1–3: build spec, calc, mismatch
         pv.build_spec_arrays(buses)
         pv.build_calc_arrays(buses, Ybus)
         mismatch = pv.build_mismatch_vector()   # column vector
+        #print("mismatch:\n", mismatch)
+        #print("np.max(abs(mismatch)):", np.max(np.abs(mismatch)))
+        #print("manual max:", max(abs(x) for x in mismatch.flatten()))
 
         # 4: convergence check
         max_mis = np.max(np.abs(mismatch))
