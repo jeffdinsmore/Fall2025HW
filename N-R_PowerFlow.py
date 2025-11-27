@@ -91,7 +91,7 @@ def load_system_file(filename):
 
 # --- system data (per-unit) ---
 baseMVA, buses, name_map = load_system_file("FiveBus_PQ")
-#print(f"buses-----------------\n{buses}\n")
+print(f"buses-----------------\n{buses}\n")
 
 
 def load_line_data(filename, bus_name_to_num):
@@ -136,13 +136,6 @@ def load_line_data(filename, bus_name_to_num):
 # --- line impedances (pu) ---
 Z = load_line_data("FiveBus_PQ", name_map)
 #print(f"Z----------------------\n{Z1}\n")
-
-TL = 3      # Number of Transmission lines
-
-# --- bus type enum ---
-SLACK, PQ, PV = 0, 1, 2
-
-n = len(buses)       # Number of busses
 
 # --- flat start values ---
 delta = np.array([0.0, 0.0])   # σ2, σ3 (bus angles in radians excluding slack)
@@ -193,12 +186,21 @@ def build_Ybus(Z, n=None):
     return Y
 
 
-def tabulate_results(data):
-    print(tabulate(data, headers='keys', tablefmt='grid'))
+#def tabulate_results(data):
+ #   print(tabulate(data, headers='keys', tablefmt='grid'))
 
 # build Y-bus -----------------------------------------------
 Ybus = build_Ybus(Z)
 #print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
+def display_Ybus(Ybus):
+    rows = []
+    for i in range(Ybus.shape[0]):
+        row = []
+        for j in range(Ybus.shape[1]):
+            row.append(f"{Ybus[i, j].real:.4f} + j{Ybus[i, j].imag:.4f}")
+        rows.append(row)
+
+    print(tabulate(rows, tablefmt="grid"))
 
 # extract diagonal elements ---------------------------------
 Y_diag = np.diag(Ybus)
@@ -206,6 +208,7 @@ Y_diag = np.diag(Ybus)
 
 # Extract off-diagonal Y values (i ≠ j) ----------------------
 off_diagonals = []
+n = len(buses)
 for i in range(n):
     for j in range(n):
         if i != j:
@@ -216,14 +219,14 @@ for i in range(n):
 
 # Convert to array for clarity (bus pair, magnitude, angle)
 Y_off = np.array(off_diagonals, dtype=object)
-print(f"[INFO] Your Ybus off diagonal elements are: \n{Y_off}\n")
+#print(f"[INFO] Your Ybus off diagonal elements are: \n{Y_off}\n")
 
 # convert to polar form (magnitude, angle in radians)
 Y_polar_diag = np.array([(abs(y), np.angle(y)) for y in Y_diag])
-print(f"[INFO] Your Ybus polar diagonals are: \n{Y_polar_diag}\n")
+#print(f"[INFO] Your Ybus polar diagonals are: \n{Y_polar_diag}\n")
 
 Y_polar_off = np.array([(abs(y), np.angle(y)) for y in Y_diag])
-print(f"[INFO] Your Ybus polar off diagonals are: \n{Y_polar_off}\n")
+#print(f"[INFO] Your Ybus polar off diagonals are: \n{Y_polar_off}\n")
 
 
 
@@ -293,7 +296,7 @@ class PowerVariables:
             self.Q_spec.append(QG - QD)
         self.Q_spec = np.array(self.Q_spec, dtype=float)
 
-    # Setting up calculations for mismatch matrix
+    # Setting up calculations for mismatch matrix ----------------------------------------
     def build_calc_arrays(self, buses, Ybus):
         """
         Compute reduced P_calc and Q_calc from Ybus and current bus voltages.
@@ -315,11 +318,13 @@ class PowerVariables:
 
         # full complex voltage vector V (all buses)
         V = np.zeros(n, dtype=complex)
+        
         for b, data in buses.items():
             V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-
+        print("-------------------------\n", V)
         G = Ybus.real
         B = Ybus.imag
+        print(f"\nG+jB = {G} + j{B}\n")
         Vm = np.abs(V)
         Va = np.angle(V)
 
@@ -365,6 +370,39 @@ class PowerVariables:
         mismatch = np.concatenate([deltaP, deltaQ]).reshape(-1, 1)
         return mismatch
 
+    def build_unknown_vector(self, buses):
+        """
+        Build the NR state (unknown) vector x = [δ_non_slack; V_PQ].
+
+        Uses:
+            self.non_slack_buses
+            self.pq_buses
+
+        Reads δ and V from the buses dict.
+
+        Returns:
+            x : 1D numpy array (δ for non-slack, then V for PQ buses)
+        """
+        # ensure bus lists exist
+        if self.non_slack_buses is None or self.pq_buses is None:
+            self.build_spec_arrays(buses)
+
+        delta_list = []
+        for b in self.non_slack_buses:
+            delta_list.append(buses[b]["δ"])
+
+        V_list = []
+        for b in self.pq_buses:
+            V_list.append(buses[b]["V"])
+
+        x = np.concatenate([np.array(delta_list, dtype=float),
+                            np.array(V_list,    dtype=float)])
+
+        # optional: store it on the object
+        self.state_vector = x
+        return x
+
+
 #print(dir(PowerVariables))
 
 
@@ -380,7 +418,10 @@ print("pq =", pv.pq_buses)
 print("P_calc =", pv.P_calc)
 print("Q_calc =", pv.Q_calc)
 print("Vectors", pv.build_mismatch_vector())
+print("state", pv.build_unknown_vector(buses))
 
+
+#display_Ybus(Ybus)
 #build_mismatch_matrix(Ybus)
 #calc_power_injections(Ybus, V)
 
@@ -390,6 +431,6 @@ print("Vectors", pv.build_mismatch_vector())
 #print(Ybus)
 #print("Off diag", Y_off)
 #print("Y polar", np.round(np.cos(np.pi/2),8))
-print("radians", degreeToRadians(90))
+#print("radians", degreeToRadians(90))
 # optional: if you want to view angles in degrees
 # Y_polar_deg = np.array([(abs(y), np.degrees(np.angle(y))) for y in Y_diag])
