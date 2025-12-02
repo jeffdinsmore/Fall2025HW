@@ -10,7 +10,7 @@ Flat start: σ1=0, σ2=0, V2=1
 
 Author: Jeff Dinsmore
 """
-
+#%%
 import numpy as np
 import math
 import cmath
@@ -21,7 +21,7 @@ from pprint import pprint as pp
 import copy
 
 # --- tolerances / iteration ---
-#EPS = [1e-2]
+#EPS = [1e-4]
 EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]  # mismatch tolerance (pu)
 #k = 0       # NR iteration counter
 MAX_ITERS = 20
@@ -89,13 +89,47 @@ def load_system_file(filename):
                     "PD": PD,
                     "QD": QD,
                 }
+        """
+        Parse LINE data from the system file and build the Z dict.
 
-    return baseMVA, buses, bus_name_to_num
+        Z[(i, j)] = R + jX   where i, j are *bus numbers* (1-based, ints)
+
+        Assumes:
+        - filename is like 'FiveBus_PQ'
+        - bus_name_to_num maps bus names ('Alan') -> bus numbers (1, 2, ...)
+        - Rse, Xse are already in per-unit
+        """
+        Z = {}
+
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("%"):
+                continue
+
+            parts = line.split()
+
+            if parts[0].upper() == "LINE":
+                # LINE  from  to  Rse  Xse  Gsh  Bsh  Rating
+                _, from_name, to_name, Rse, Xse, Gsh, Bsh, rating = parts
+
+                i = bus_name_to_num[from_name]
+                j = bus_name_to_num[to_name]
+
+                R = float(Rse)
+                X = float(Xse)
+
+                # store only one direction; build_Ybus will handle symmetry
+                if i > j:
+                    i, j = j, i
+
+                Z[(i, j)] = R + 1j * X
+
+
+    return baseMVA, buses, bus_name_to_num, Z
 
 
 # --- system data (per-unit) ---
-baseMVA, buses, name_map = load_system_file("FiveBus_PQ")
-#print(f"buses-----------------\n{buses}\n")
+baseMVA, buses, name_map, Z = load_system_file("FiveBus_PQ")
 
 
 def load_line_data(filename, bus_name_to_num):
@@ -223,14 +257,14 @@ for i in range(n):
             off_diagonals.append(((i+1, j+1), mag, ang))
 
 # Convert to array for clarity (bus pair, magnitude, angle)
-Y_off = np.array(off_diagonals, dtype=object)
+#Y_off = np.array(off_diagonals, dtype=object)
 #print(f"[INFO] Your Ybus off diagonal elements are: \n{Y_off}\n")
 
 # convert to polar form (magnitude, angle in radians)
-Y_polar_diag = np.array([(abs(y), np.angle(y)) for y in Y_diag])
+#Y_polar_diag = np.array([(abs(y), np.angle(y)) for y in Y_diag])
 #print(f"[INFO] Your Ybus polar diagonals are: \n{Y_polar_diag}\n")
 
-Y_polar_off = np.array([(abs(y), np.angle(y)) for y in Y_diag])
+#Y_polar_off = np.array([(abs(y), np.angle(y)) for y in Y_diag])
 #print(f"[INFO] Your Ybus polar off diagonals are: \n{Y_polar_off}\n")
 
 
@@ -253,6 +287,8 @@ class PowerVariables:
 
     def __init__(self):
         # reduced arrays (start empty; will be set by methods)
+        # This variable belongs to *this specific* instance of PowerVariables
+        self.is_converged = False
         self.P_spec = None
         self.Q_spec = None
         self.P_calc = None
@@ -261,6 +297,27 @@ class PowerVariables:
         # store corresponding bus numbers
         self.non_slack_buses = None
         self.pq_buses = None
+
+    def set_converged(self, var):
+        self.is_converged = var # The shared boolean variable
+
+    def get_convergence_status(self):
+        # A method to return the current value
+        return self.is_converged
+    #---------------------------------------------------------------------------
+    def convergence(self, var):
+        # ... calculation logic ...
+        # Based on a condition, set the shared variable to True
+        if var: # Replace with your actual condition
+            self.is_converged = True
+        else:
+            self.is_converged = False
+        
+    def converged_true(self):
+        # Method to return the current value of the shared variable
+        return self.state.is_converged
+    
+    
     # ---------------------------------------------------------------------------
     def build_spec_arrays(self, buses):
         """
@@ -326,7 +383,7 @@ class PowerVariables:
         
         for b, data in buses.items():
             V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-            print("-----------------", V[b-1], data["δ"])
+            #print("-----------------", V[b-1], data["δ"])
         G = Ybus.real
         B = Ybus.imag
 
@@ -630,7 +687,7 @@ class PowerVariables:
 
         return J4
 
-    # Full Jacobian Matrix build ---------------------------------------------------------------
+    # Full Jacobian Matrix build ------------------------------------------------------------------
     def build_jacobian(self, buses, Ybus):
         """
         Build the full NR Jacobian:
@@ -655,7 +712,7 @@ class PowerVariables:
         J = np.vstack((top, bottom))
         return J
 
-    # Solve for unknown state matrix ---------------------------------------------------------------
+    # Solve for unknown state matrix ------------------------------------------------------------------
     def solve_for_state_update(self, buses, Ybus):
         """
         Build mismatch and Jacobian, then solve for Δx.
@@ -682,7 +739,7 @@ class PowerVariables:
         self.delta_x = delta_x
         return delta_x
     
-    # Apply the solved unknown state to new state matrix ---------------------------------------------------------------
+    # Apply the solved unknown state to new state matrix ----------------------------------------------------
     def apply_state_update(self, buses, delta_x):
         """
         Apply Δx to update bus angles and voltages.
@@ -705,32 +762,9 @@ class PowerVariables:
         for idx, b in enumerate(self.pq_buses):
             buses[b]["V"] += d_V[idx]
 
-#print(dir(PowerVariables))
 
-
-pv = PowerVariables()      # create the object
-"""pv.build_spec_arrays(buses)  # call the method
-pv.build_calc_arrays(buses, Ybus)
-mismatch = pv.build_mismatch_vector()
-#pv.build_mismatch_vector()
-
-print("\nP_spec =", pv.P_spec)
-print("\nQ_spec =", pv.Q_spec)
-print("\nnon-slack =", pv.non_slack_buses)
-print("\npq =", pv.pq_buses)
-print("\nP_calc =", pv.P_calc)
-print("\nQ_calc =", pv.Q_calc)
-print("\nMismatch Vectors", mismatch)
-print("Initial max mismatch:", np.max(np.abs(mismatch)))
-print("\nUnknown state", pv.build_unknown_state_vector(buses))
-#print("\nFull Jacobian matrix", pv.build_jacobian(buses, Ybus))
-display_Ybus(pv.build_jacobian(buses, Ybus))
-"""
-
-#delta_x = pv.solve_for_state_update(buses, Ybus)
-#pv.apply_state_update(buses, delta_x)
-#print("\nUnknown state", pv.build_unknown_state_vector(buses))
-#print("\nΔx:", delta_x)
+# create the object
+pv = PowerVariables()      
 
 def compute_bus_injections(buses, Ybus):
     """
@@ -739,10 +773,13 @@ def compute_bus_injections(buses, Ybus):
     P_i, Q_i > 0 means net generation at bus i.
     """
     n = len(buses)
+    
     # Build complex V vector from buses dict
     V = np.zeros(n, dtype=complex)
     for b, data in buses.items():
-        idx = b - 1  # bus numbers are 1-based
+        
+        # bus numbers are 1-based
+        idx = b - 1  
         V[idx] = data["V"] * np.exp(1j * data["δ"])
 
     G = Ybus.real
@@ -764,8 +801,7 @@ def compute_bus_injections(buses, Ybus):
     return P, Q
 
 
-def print_v_and_delta():
-    #base_MVA = 100.0  # from your system data
+def print_bus_info():
 
     P_pu, Q_pu = compute_bus_injections(buses, Ybus)
     table_rows = []
@@ -778,111 +814,92 @@ def print_v_and_delta():
         delta_deg = np.degrees(data["δ"])
         P_inj_pu = P_pu[idx]
         Q_inj_pu = Q_pu[idx]
-        #print(f"\n{buses}\n\n{type_map.get(data["type"])}\n", )
+
         row = {
             "Bus": b,
+            "Name": data["name"],
             "Type": b_type,
             "V (pu)": f"{V_pu:.4f}",
-            "Angle (deg)": f"{delta_deg:.2f}",
+            "δ, ∠(deg)": f"{delta_deg:.2f}",
             "P_inj (pu)": f"{P_inj_pu:.4f}",
             "Q_inj (pu)": f"{Q_inj_pu:.4f}",
             "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
             "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
         }
+        #print(f"rows-------", buses)
         table_rows.append(row)
-    df = pd.DataFrame(table_rows)
-    df.to_csv("final_bus_results.csv", index=False)
+    #df = pd.DataFrame(table_rows)
+    #df.to_csv("final_bus_results.csv", index=False)
 
-    print("Saved results to final_bus_results.csv")
+    #print("Saved results to final_bus_results.csv")
     print("\nFinal Bus Voltages and Angles:")
     print(tabulate(table_rows, headers="keys", tablefmt="grid"))
     return table_rows
 
-def create_bus_table(b):
-    P_pu, Q_pu = compute_bus_injections(buses, Ybus)
-    print(f"b--------------{b}")
-    data = buses[b+1]
-    idx = b - 1
-    V_pu = data["V"]
-    b_type = data["type"]
-    delta_deg = np.degrees(data["δ"])
-    P_inj_pu = P_pu[idx]
-    Q_inj_pu = Q_pu[idx]
-    row = {
-        "Bus": b,
-        "Type": b_type,
-        "V (pu)": f"{V_pu:.4f}",
-        "Angle (deg)": f"{delta_deg:.2f}",
-        "P_inj (pu)": f"{P_inj_pu:.4f}",
-        "Q_inj (pu)": f"{Q_inj_pu:.4f}",
-        "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
-        "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
-    }
-    return row
-
 def run_iterations():
+
     for tol in EPS:
         num = -1
-        print("\n=== Running NR with EPS =", tol, "===")
+        print("\n======================== Running NR with EPS =", tol, "========================")
 
         # reset buses to flat start
         buses = copy.deepcopy(buses_flat_start)
 
         pv = PowerVariables()
+        pv.set_converged(True)
+        pv.convergence(False)
         delta_x = None
         max_dx = 1
         mismatch_history = []
         dx_history = []
-        table_rows = []
-        iteration_history = []
+        iteration_history_A = []
+        iteration_history_B = []
+        iteration_history_C = []
+        iteration_history_D = []
+        iteration_history_E = []
         for k in range(MAX_ITERS):
-            #table_rows.append(create_bus_table(k))
             num+=1
-            
+            #print_bus_info()
             # 1–3: build spec, calc, mismatch
             pv.build_spec_arrays(buses)
             pv.build_calc_arrays(buses, Ybus)
             
-            mismatch = pv.build_mismatch_vector()   # column vector
-            #unknown = pv.build_unknown_state_vector(buses)
-            #print("mismatch:\n", mismatch)
-            #print("np.max(abs(mismatch)):", np.max(np.abs(mismatch)))
-            #print("manual max:", max(abs(x) for x in mismatch.flatten()))
+            # column vector
+            mismatch = pv.build_mismatch_vector()   
 
             # 4: convergence check
             max_mis = np.max(np.abs(mismatch))
             mismatch_history.append(max_mis)
-            #print(f"buses ------------{buses}")
+            
             if delta_x is not None:
                 dx_history.append(np.max(np.abs(delta_x)))
                 max_dx = np.max(np.abs(delta_x))
-            print(f"Iter {k}: max mismatch = {max_mis}\nIter {k}: Δx = {max_dx}")
-            #print("\n", unknown)
+            #print(f"Iter {k}: max mismatch = {max_mis}\nIter {k}: Δx = {max_dx}")
             
             # state-change-based check (skip on first iter, since delta_x is None)
             if delta_x is None:
                 #dx_history.append(None)
                 max_dx = float('inf')
-                print("Iter 0: Δx not computed yet")
+                print("Iter 0: ΔV & Δδ not computed yet")
             else:
                 max_dx = np.max(np.abs(delta_x))
-                #print(f"Iter {k}: max Δx = {max_dx:.6e}")
+                #k}: max Δx = {max_dx:.6e}")
 
             if (max_mis < tol) and (max_dx < tol):
-                print("Converged!", num, tol, max_mis, mismatch )
-                #print(f"\n mismatch {mismatch_history}\n delta x {dx_history}\n")
+                print("Converged!", num, tol, max_mis )
+                pv.convergence(True)
 
                 # Convert to arrays
                 mis = np.array(mismatch_history)
                 dx  = np.array(dx_history)
-                #print(f"dx -------------- {dx}\n")
+
                 # x-axis positions
                 iters_mis = np.arange(0, len(mis))       # start mismatch at iteration 0
                 iters_dx  = np.arange(1, len(mis))       # start delta-x at iteration 1
-                #print(f"dx -------------- {iters_dx}\n")
-                #fig, ax1, ax2 = plt.subplots(figsize=(8, 5))
+
                 plt.figure(figsize=(8,5))
-                # Left axis → mismatch history
+
+                # mismatch history
                 plt.plot(iters_mis, mis, marker='o', label='Max Mismatch |ΔP, ΔQ|')
                 plt.plot(iters_dx, dx, marker='s', color='orange', label='Max State Update |Δx|')
                 plt.yscale('log')
@@ -890,25 +907,13 @@ def run_iterations():
                 plt.ylabel('ΔP, ΔQ, ΔV, & Δδ (log scale)')
                 plt.grid(True, which='both', linestyle='--', linewidth=0.6)
 
-                # Right axis → delta_x history
-                #ax2 = ax1.twinx()
-                
-                #plt.set_yscale('log')
-                #plt.set_ylabel('Max State Update (log scale)')
-
                 # Title
-                plt.title('N-R Power Flow Convergence vs Iterations')
-
-                # Build a combined legend
-                #lines_1, labels_1 = plt.get_legend_handles_labels()
-                #lines_2, labels_2 = plt.get_legend_handles_labels()
+                plt.title(f'N-R Power Flow Convergence vs Iterations Using ε={tol}')
                 plt.legend(loc='upper right')
-
-                #plt.tight_layout()
                 plt.show()
+                
                 break
-            else:
-                print("Did not converge within MAX_ITERS")
+                
             # 5: build Jacobian
             J = pv.build_jacobian(buses, Ybus)
 
@@ -917,47 +922,54 @@ def run_iterations():
 
             # 7: apply update to buses
             pv.apply_state_update(buses, delta_x)
-            table_rows.append(print_v_and_delta())
             P_pu, Q_pu = compute_bus_injections(buses, Ybus)
             for b, data in buses.items():
                 idx = b-1
                 P_inj_pu = P_pu[idx]
                 Q_inj_pu = Q_pu[idx]
-                iteration_history.append({
-                    "Bus": b,
-                    "Name": data["name"],
-                    "Type": data["type"],
-                    "Iteration": k + 1,        # iteration number (start at 1)
-                    "V (pu)": float(data["V"]),
-                    "Angle (deg)": float(np.degrees(data["δ"])),
-                    "P_inj (pu)": f"{P_inj_pu:.4f}",
-                    "Q_inj (pu)": f"{Q_inj_pu:.4f}",
-                    "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
-                    "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
-                })
-        df = pd.DataFrame(iteration_history)
-        df.to_csv(f"tabulated_bus_results{tol}.csv", index=False)
+                info = {
+                        "Bus": b,
+                        "Name": data["name"],
+                        "Type": data["type"],
+                        "Iter": k + 1,        # iteration number (start at 1)
+                        "V (pu)": float(data["V"]),
+                        "Angle (deg)": float(np.degrees(data["δ"])),
+                        "P_inj (pu)": f"{P_inj_pu:.4f}",
+                        "Q_inj (pu)": f"{Q_inj_pu:.4f}",
+                        "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
+                        "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
+                    }
+                match data["name"]:
+                    case "Alan":
+                        iteration_history_A.append(info)
+                    case "Betty":
+                        iteration_history_B.append(info)
+                    case "Clyde":
+                        iteration_history_C.append(info)
+                    case "Doug":
+                        iteration_history_D.append(info)
+                    case _:  # Default case
+                        iteration_history_E.append(info)
+
+        print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"),"\n")
+        print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"),"\n")
+        print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"),"\n")
+        print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"),"\n")
+        print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"),"\n")
+        if pv.get_convergence_status() is False:
+            print(f"Did not converge within MAX_ITERS at {MAX_ITERS} with ε={tol}")
+                #if data["name"] == "Alan":
+                #    iteration_history_A.append(info)
+                #else if data["name"] == "Betty":
+
+                    
+        #df = pd.DataFrame(iteration_history)
+        #df.to_csv(f"tabulated_bus_results{tol}.csv", index=False)
             
-            
-        #print(f"\ntable--------------\n", table_rows)
+    #print(tabulate(iteration_history, headers="keys", tablefmt="grid"),"\n")
+    #print(buses,"\n")
+    #print_bus_info()
 run_iterations()
 
-print_v_and_delta()
-#print("\nJ1 Jacobian matrix", pv.build_J1(buses, Ybus))
-#print("\nJ2 Jacobian matrix", pv.build_J2(buses, Ybus))
-#print("\nJ3 Jacobian matrix", pv.build_J3(buses, Ybus))
-#print("\nJ4 Jacobian matrix", pv.build_J4(buses, Ybus))
 
-#display_Ybus(Ybus)
-#build_mismatch_matrix(Ybus)
-#calc_power_injections(Ybus, V)
-
-#build_mismatch_vector(Ybus, V, P_spec, Q_spec, slack_bus, pv_buses, pq_buses)
-
-#tabulate_results(buses)
-#print(Ybus)
-#print("Off diag", Y_off)
-#print("Y polar", np.round(np.cos(np.pi/2),8))
-#print("radians", degreeToRadians(90))
-# optional: if you want to view angles in degrees
-# Y_polar_deg = np.array([(abs(y), np.degrees(np.angle(y))) for y in Y_diag])
+# %%
