@@ -1,16 +1,17 @@
 """
-NR Power Flow: 3-bus system
-Buses: 1=Slack, 2=PQ (load), 3=PV (gen)
+NR Power Flow: 5-bus system
+Buses: 1=Slack, 3=PQ (load), 1=PV (gen)
 Given: V1=1.0∠0, PD2=0.9, QD2=0.5, PG3=1.3, V3=1.01
 Lines: Z12=j0.1, Z13=j0.25, Z23=j0.2
-Epsilon=0.01, k=0
-Flat start: σ1=0, σ2=0, V2=1
+Epsilon=0.01 to 1e-9, k=0
+Flat start: δ1=0, δ2=0, δ3=0, δ4=0, δ5=0, V is given on all buses
 
----Need to update this to handle n buses
+---Updated to handle n buses
 
 Author: Jeff Dinsmore
 """
-#%%
+
+# %%
 import numpy as np
 import time
 import math
@@ -21,14 +22,19 @@ import matplotlib.pyplot as plt
 from pprint import pprint as pp
 import copy
 
-# --- tolerances / iteration ---
-#EPS = [1e-4]
-EPS = [1e-2, 1e-4, 1e-6]  # mismatch tolerance (pu)
-#k = 0       # NR iteration counter
+# ---------------------------------------------------------------------------
+# Global tolerances and iteration controls
+# ---------------------------------------------------------------------------
+
+# mismatch tolerances (per-unit)
+EPS = [1e-2, 1e-4, 1e-6, 1e-9]
+
+# maximum NR / FDLF iterations allowed
 MAX_ITERS = 20
 
-
+# bus type codes
 SLACK, PQ, PV = 0, 1, 2
+
 
 def load_system_file(filename):
     """
@@ -125,7 +131,6 @@ def load_system_file(filename):
 
                 Z[(i, j)] = R + 1j * X
 
-
     return baseMVA, buses, bus_name_to_num, Z
 
 
@@ -172,26 +177,28 @@ def load_line_data(filename, bus_name_to_num):
 
     return Z
 
+
 # --- line impedances (pu) ---
 Z = load_line_data("FiveBus_PQ", name_map)
-#print(f"Z----------------------\n{Z1}\n")
 
-# --- flat start values ---
+# --- flat start values for 3-bus example (delta, V) ---
 delta = np.array([0.0, 0.0])   # σ2, σ3 (bus angles in radians excluding slack)
 V = np.array([1.0, 1.01])      # V2, V3 magnitudes
 
-# after loading buses from the file and setting flat start δ = 0, V from file
+# store a copy of the original bus data for flat start each run
 buses_flat_start = copy.deepcopy(buses)
 
 
-# store symmetrically for convenience
-#Z.update({(j, i): z for (i, j), z in list(Z.items())})
-
 def degreeToRadians(degree):
+    """Convert degrees to radians."""
     radians = np.pi * degree / 180
     return radians
 
-# Y-Bus function ----------------------------------
+
+# ---------------------------------------------------------------------------
+# Y-bus construction
+# ---------------------------------------------------------------------------
+
 def build_Ybus(Z, n=None):
     """
     Build an n x n Y-bus matrix from a dict of line impedances Z.
@@ -227,17 +234,17 @@ def build_Ybus(Z, n=None):
     return Y
 
 
-#def tabulate_results(data):
- #   print(tabulate(data, headers='keys', tablefmt='grid'))
-
-# build Y-bus -----------------------------------------------
+# build Y-bus
 Ybus = build_Ybus(Z)
 
-# --- Build B matrix for FDLF use (keep Ybus intact) ---
+# ---------------------------------------------------------------------------
+# Susceptance matrices for FDLF (B', B'')
+# ---------------------------------------------------------------------------
+
 # B_full is the susceptance matrix used as the starting point
 # for B' and B'' in Fast Decoupled Load Flow.
 B_full = -np.imag(Ybus)
-#print(f"[INFO] Your B (susceptance) matrix for FDLF is: \n{B_full}\n")
+
 
 def build_B_prime_and_B_double_prime(B_full, buses):
     """
@@ -254,11 +261,11 @@ def build_B_prime_and_B_double_prime(B_full, buses):
     # identify slack, non-slack, PQ buses
     slack_bus = next(b for b in bus_nums if buses[b]["type"] == "SL")
     non_slack_buses = [b for b in bus_nums if b != slack_bus]
-    pq_buses        = [b for b in bus_nums if buses[b]["type"] == "PQ"]
+    pq_buses = [b for b in bus_nums if buses[b]["type"] == "PQ"]
 
     # map bus numbers -> 0-based indices for B_full
     non_slack_idx = [b - 1 for b in non_slack_buses]
-    pq_idx        = [b - 1 for b in pq_buses]
+    pq_idx = [b - 1 for b in pq_buses]
 
     # B' : submatrix for non-slack buses (angles)
     B_prime = B_full[np.ix_(non_slack_idx, non_slack_idx)]
@@ -268,6 +275,7 @@ def build_B_prime_and_B_double_prime(B_full, buses):
 
     return B_prime, B_double_prime, non_slack_buses, pq_buses
 
+
 B_prime, B_double_prime, non_slack_buses, pq_buses = build_B_prime_and_B_double_prime(B_full, buses)
 
 print("[INFO] B' (for angles, non-slack buses):")
@@ -275,8 +283,9 @@ print(B_prime)
 print("\n[INFO] B'' (for voltages, PQ buses):")
 print(B_double_prime)
 
-#print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
+
 def display_Ybus(Ybus):
+    """Pretty-print the Y-bus in rectangular form."""
     rows = []
     for i in range(Ybus.shape[0]):
         row = []
@@ -286,11 +295,11 @@ def display_Ybus(Ybus):
 
     print(tabulate(rows, tablefmt="grid"))
 
-# extract diagonal elements ---------------------------------
-Y_diag = np.diag(Ybus)
-#print(f"[INFO] Your Y-diagonals are: {Y_diag}\n")
 
-# Extract off-diagonal Y values (i ≠ j) ----------------------
+# extract diagonal elements of Y-bus
+Y_diag = np.diag(Ybus)
+
+# collect off-diagonal elements (for any diagnostic use)
 off_diagonals = []
 n = len(buses)
 for i in range(n):
@@ -299,22 +308,13 @@ for i in range(n):
             y = Ybus[i, j]
             mag = abs(y)
             ang = np.angle(y)  # radians
-            off_diagonals.append(((i+1, j+1), mag, ang))
-
-# Convert to array for clarity (bus pair, magnitude, angle)
-#Y_off = np.array(off_diagonals, dtype=object)
-#print(f"[INFO] Your Ybus off diagonal elements are: \n{Y_off}\n")
-
-# convert to polar form (magnitude, angle in radians)
-#Y_polar_diag = np.array([(abs(y), np.angle(y)) for y in Y_diag])
-#print(f"[INFO] Your Ybus polar diagonals are: \n{Y_polar_diag}\n")
-
-#Y_polar_off = np.array([(abs(y), np.angle(y)) for y in Y_diag])
-#print(f"[INFO] Your Ybus polar off diagonals are: \n{Y_polar_off}\n")
+            off_diagonals.append(((i + 1, j + 1), mag, ang))
 
 
+# ---------------------------------------------------------------------------
+# PowerVariables class: holds P/Q vectors, state, Jacobian, mismatch, etc.
+# ---------------------------------------------------------------------------
 
-# For mismatch matrix
 class PowerVariables:
     """
     Holds all P and Q vectors needed for NR power flow.
@@ -331,39 +331,44 @@ class PowerVariables:
     """
 
     def __init__(self):
-        # reduced arrays (start empty; will be set by methods)
-        # This variable belongs to *this specific* instance of PowerVariables
+        # convergence flag for the current solution
         self.is_converged = False
+
+        # reduced arrays (set by build_spec_arrays / build_calc_arrays)
         self.P_spec = None
         self.Q_spec = None
         self.P_calc = None
         self.Q_calc = None
 
-        # store corresponding bus numbers
+        # bus lists
         self.non_slack_buses = None
         self.pq_buses = None
 
     def set_converged(self, var):
-        self.is_converged = var # The shared boolean variable
+        """Set convergence flag explicitly."""
+        self.is_converged = var
 
     def get_convergence_status(self):
-        # A method to return the current value
+        """Return current convergence flag."""
         return self.is_converged
-    #---------------------------------------------------------------------------
+
     def convergence(self, var):
-        # ... calculation logic ...
-        # Based on a condition, set the shared variable to True
-        if var: # Replace with your actual condition
+        """
+        Convenience wrapper to update convergence flag
+        based on a passed condition.
+        """
+        if var:
             self.is_converged = True
         else:
             self.is_converged = False
-        
+
     def converged_true(self):
-        # Method to return the current value of the shared variable
+        """(Unused) Accessor to a convergence state (placeholder)."""
         return self.state.is_converged
-    
-    
-    # ---------------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Build specified P/Q arrays
+    # -----------------------------------------------------------------------
     def build_spec_arrays(self, buses):
         """
         Build reduced P_spec and Q_spec arrays from the buses dict.
@@ -377,15 +382,14 @@ class PowerVariables:
             self.non_slack_buses
             self.pq_buses
         """
-        
         bus_nums = sorted(buses.keys())
 
         # identify bus types
         slack_bus = next(b for b in bus_nums if buses[b]["type"] == "SL")
         self.non_slack_buses = [b for b in bus_nums if b != slack_bus]
-        self.pq_buses        = [b for b in bus_nums if buses[b]["type"] == "PQ"]
+        self.pq_buses = [b for b in bus_nums if buses[b]["type"] == "PQ"]
 
-        # --- build reduced P_spec (PG − PD for non-slack buses) ---
+        # build reduced P_spec (PG − PD for non-slack buses)
         self.P_spec = []
         for b in self.non_slack_buses:
             data = buses[b]
@@ -394,7 +398,7 @@ class PowerVariables:
             self.P_spec.append(PG - PD)
         self.P_spec = np.array(self.P_spec, dtype=float)
 
-        # --- build reduced Q_spec (QG − QD for PQ buses only) ---
+        # build reduced Q_spec (QG − QD for PQ buses only)
         self.Q_spec = []
         for b in self.pq_buses:
             data = buses[b]
@@ -403,7 +407,9 @@ class PowerVariables:
             self.Q_spec.append(QG - QD)
         self.Q_spec = np.array(self.Q_spec, dtype=float)
 
-    # Setting up calculations for mismatch matrix ----------------------------------------
+    # -----------------------------------------------------------------------
+    # Build calculated P/Q arrays (from Ybus and current V/δ)
+    # -----------------------------------------------------------------------
     def build_calc_arrays(self, buses, Ybus):
         """
         Compute reduced P_calc and Q_calc from Ybus and current bus voltages.
@@ -417,7 +423,7 @@ class PowerVariables:
 
         If those are not set yet, this will call build_spec_arrays(buses).
         """
-        # make sure bus lists exist
+        # ensure bus lists exist
         if self.non_slack_buses is None or self.pq_buses is None:
             self.build_spec_arrays(buses)
 
@@ -425,10 +431,9 @@ class PowerVariables:
 
         # full complex voltage vector V (all buses)
         V = np.zeros(n, dtype=complex)
-        
         for b, data in buses.items():
             V[b - 1] = data["V"] * np.exp(1j * data["δ"])
-            #print("-----------------", V[b-1], data["δ"])
+
         G = Ybus.real
         B = Ybus.imag
 
@@ -442,15 +447,17 @@ class PowerVariables:
         for i in range(n):
             for k in range(n):
                 theta = Va[i] - Va[k]
-                VkVi  = Vm[i] * Vm[k]
+                VkVi = Vm[i] * Vm[k]
                 P_full[i] += VkVi * (G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta))
                 Q_full[i] += VkVi * (G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta))
 
         # reduce to match spec arrays
         self.P_calc = np.array([P_full[b - 1] for b in self.non_slack_buses], dtype=float)
-        self.Q_calc = np.array([Q_full[b - 1] for b in self.pq_buses],       dtype=float)
+        self.Q_calc = np.array([Q_full[b - 1] for b in self.pq_buses], dtype=float)
 
-    # Build mismatch matrix ------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Mismatch vectors
+    # -----------------------------------------------------------------------
     def build_mismatch_vector(self):
         """
         Build the NR mismatch vector Δ = [ΔP; ΔQ] using the
@@ -486,23 +493,18 @@ class PowerVariables:
         dQ_red : ΔQ for PQ buses       (same order as self.pq_buses)
         V_mag  : |V| for each bus (full vector, length = number of buses)
         """
+        dP_red = self.P_spec - self.P_calc   # already reduced
+        dQ_red = self.Q_spec - self.Q_calc   # already reduced
 
-        # These are ALREADY reduced:
-        #   P_spec, P_calc : non-slack buses only
-        #   Q_spec, Q_calc : PQ buses only
-        dP_red = self.P_spec - self.P_calc
-        dQ_red = self.Q_spec - self.Q_calc
-
-        # Full |V| vector from current bus data
+        # full |V| vector from current bus data
         bus_nums = sorted(buses.keys())
         V_mag = np.array([buses[b]["V"] for b in bus_nums], dtype=float)
 
         return dP_red, dQ_red, V_mag
 
-
-
-
-    # Build unknown matrix -----------------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # State vector [δ_non_slack; V_PQ]
+    # -----------------------------------------------------------------------
     def build_state_vector(self, buses):
         """
         Build the NR state (unknown) vector x = [δ_non_slack; V_PQ].
@@ -529,13 +531,14 @@ class PowerVariables:
             V_list.append(buses[b]["V"])
 
         x = np.concatenate([np.array(delta_list, dtype=float),
-                            np.array(V_list,    dtype=float)])
+                            np.array(V_list, dtype=float)])
 
-        # optional: store it on the object
         self.state_vector = x
         return x
-    
-    # Build J1 for the jacobian matrix ---------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # J1: dP/dδ for non-slack buses
+    # -----------------------------------------------------------------------
     def build_J1(self, buses, Ybus):
         """
         Build J1 = dP/d(delta) for non-slack buses.
@@ -549,12 +552,11 @@ class PowerVariables:
         ns = len(self.non_slack_buses)
         J1 = np.zeros((ns, ns), dtype=float)
 
-        # Access Ybus terms
+        # access Ybus terms
         G = Ybus.real
         B = Ybus.imag
 
-        # Build complex voltage vector first
-        # (needed for angles and |V|)
+        # build complex voltage vector
         n_buses = len(buses)
         V_complex = np.zeros(n_buses, dtype=complex)
         for b, data in buses.items():
@@ -563,12 +565,10 @@ class PowerVariables:
         Vm = np.abs(V_complex)
         Va = np.angle(V_complex)
 
-        # Also need Q_calc values indexed by bus number
-        # P_calc/Q_calc in your object are reduced vectors,
-        # so map them back to full-bus numbering:
+        # map Q_calc back to full-bus indexing
         Q_full = np.zeros(n_buses)
         for idx, b in enumerate(self.pq_buses):
-            Q_full[b - 1] = self.Q_calc[idx]   # only PQ buses have Q_calc
+            Q_full[b - 1] = self.Q_calc[idx]
 
         for idx_i, bus_i in enumerate(self.non_slack_buses):
             i = bus_i - 1
@@ -580,18 +580,20 @@ class PowerVariables:
                 Vk = Vm[k]
 
                 if i == k:
-                    # Diagonal
+                    # diagonal term
                     J1[idx_i, idx_k] = -Qi - B[i, i] * Vi * Vi
                 else:
-                    # Off-diagonal
+                    # off-diagonal term
                     theta = Va[i] - Va[k]
                     J1[idx_i, idx_k] = (
                         Vi * Vk * (G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta))
                     )
 
         return J1
-    
-    # J2 of the Jacobian Matrix -------------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # J2: dP/dV (rows: non-slack, cols: PQ)
+    # -----------------------------------------------------------------------
     def build_J2(self, buses, Ybus):
         """
         Build J2 = dP/dV for NR power flow.
@@ -602,15 +604,14 @@ class PowerVariables:
         Returns:
             J2 : numpy array (ns × npq)
         """
-        ns  = len(self.non_slack_buses)
+        ns = len(self.non_slack_buses)
         npq = len(self.pq_buses)
         J2 = np.zeros((ns, npq), dtype=float)
 
-        # Real/imag parts of Ybus
         G = Ybus.real
         B = Ybus.imag
 
-        # Build complex voltages
+        # build complex voltages
         n_buses = len(buses)
         V_complex = np.zeros(n_buses, dtype=complex)
         for b, data in buses.items():
@@ -619,13 +620,12 @@ class PowerVariables:
         Vm = np.abs(V_complex)
         Va = np.angle(V_complex)
 
-        # Need P_calc mapped into full bus indexing
+        # map P_calc to full-bus indexing
         P_full = np.zeros(n_buses)
         for idx, b in enumerate(self.non_slack_buses):
-            # P_calc is stored in same order as non-slack buses
             P_full[b - 1] = self.P_calc[idx]
 
-        # Build J2
+        # build J2
         for row_idx, bus_i in enumerate(self.non_slack_buses):
             i = bus_i - 1
             Vi = Vm[i]
@@ -637,18 +637,20 @@ class PowerVariables:
                 theta = Va[i] - Va[k]
 
                 if i == k:
-                    # Diagonal only if that bus is PQ
+                    # diagonal term for PQ bus
                     P_i = P_full[i]
                     J2[row_idx, col_idx] = (P_i / Vi) + G[i, i] * Vi
                 else:
-                    # Off-diagonal
+                    # off-diagonal term
                     J2[row_idx, col_idx] = Vi * (
                         G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta)
                     )
 
         return J2
-    
-    # J3 for the Jacobian Matrix ---------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # J3: dQ/dδ (rows: PQ, cols: non-slack)
+    # -----------------------------------------------------------------------
     def build_J3(self, buses, Ybus):
         """
         Build J3 = dQ/d(delta)
@@ -660,13 +662,13 @@ class PowerVariables:
             J3 : numpy array (npq × ns)
         """
         npq = len(self.pq_buses)
-        ns  = len(self.non_slack_buses)
+        ns = len(self.non_slack_buses)
         J3 = np.zeros((npq, ns), dtype=float)
 
         G = Ybus.real
         B = Ybus.imag
 
-        # Build complex voltage vector
+        # build complex voltage vector
         n_buses = len(buses)
         V_complex = np.zeros(n_buses, dtype=complex)
         for b, data in buses.items():
@@ -675,12 +677,12 @@ class PowerVariables:
         Vm = np.abs(V_complex)
         Va = np.angle(V_complex)
 
-        # Need P_calc mapped to full bus indexing
+        # map P_calc to full-bus indexing (non-slack only)
         P_full = np.zeros(n_buses)
         for idx, b in enumerate(self.non_slack_buses):
-            P_full[b - 1] = self.P_calc[idx]  # only non-slack buses have P_calc values
+            P_full[b - 1] = self.P_calc[idx]
 
-        # Build J3
+        # build J3
         for row_idx, bus_i in enumerate(self.pq_buses):
             i = bus_i - 1
             Vi = Vm[i]
@@ -692,18 +694,20 @@ class PowerVariables:
                 theta = Va[i] - Va[k]
 
                 if i == k:
-                    # Diagonal entry (PQ bus only)
+                    # diagonal entry (PQ bus only)
                     P_i = P_full[i]
                     J3[row_idx, col_idx] = P_i - G[i, i] * Vi * Vi
                 else:
-                    # Off-diagonal
+                    # off-diagonal
                     J3[row_idx, col_idx] = -Vi * Vk * (
                         G[i, k] * np.cos(theta) + B[i, k] * np.sin(theta)
                     )
 
         return J3
-    
-    # J4 for the Jacobian Matrix ---------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # J4: dQ/dV (rows: PQ, cols: PQ)
+    # -----------------------------------------------------------------------
     def build_J4(self, buses, Ybus):
         """
         Build J4 = dQ/dV for PQ buses.
@@ -720,7 +724,7 @@ class PowerVariables:
         G = Ybus.real
         B = Ybus.imag
 
-        # Build complex voltage vector
+        # build complex voltage vector
         n_buses = len(buses)
         V_complex = np.zeros(n_buses, dtype=complex)
         for b, data in buses.items():
@@ -729,7 +733,7 @@ class PowerVariables:
         Vm = np.abs(V_complex)
         Va = np.angle(V_complex)
 
-        # Need Q_calc in full bus indexing
+        # map Q_calc to full-bus indexing
         Q_full = np.zeros(n_buses)
         for idx, b in enumerate(self.pq_buses):
             Q_full[b - 1] = self.Q_calc[idx]
@@ -746,94 +750,100 @@ class PowerVariables:
                 theta = Va[i] - Va[k]
 
                 if i == k:
-                    # Diagonal PQ bus
+                    # diagonal PQ bus
                     J4[row_idx, col_idx] = (Qi / Vi) - B[i, i] * Vi
                 else:
-                    # Off-diagonal
+                    # off-diagonal
                     J4[row_idx, col_idx] = Vi * (
                         G[i, k] * np.sin(theta) - B[i, k] * np.cos(theta)
                     )
 
         return J4
 
-    # Full Jacobian Matrix build ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Full Jacobian assembly
+    # -----------------------------------------------------------------------
     def build_jacobian(self, buses, Ybus):
         """
         Build the full NR Jacobian:
         
             J = [ J1   J2
-                J3   J4 ]
+                  J3   J4 ]
 
         Returns:
             J : full Jacobian matrix (numpy array)
         """
-        # Build the four blocks
         J1 = self.build_J1(buses, Ybus)
         J2 = self.build_J2(buses, Ybus)
         J3 = self.build_J3(buses, Ybus)
         J4 = self.build_J4(buses, Ybus)
 
-        # Stack horizontally (J1 with J2, J3 with J4)
+        # stack horizontally (J1 with J2, J3 with J4)
         top = np.hstack((J1, J2))
         bottom = np.hstack((J3, J4))
 
-        # Stack vertically into the full Jacobian
+        # stack vertically into the full Jacobian
         J = np.vstack((top, bottom))
         return J
 
-    # Solve for unknown state matrix ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Solve for state update Δx - |ΔV, Δδ|
+    # -----------------------------------------------------------------------
     def solve_for_state_update(self, buses, Ybus):
         """
-        Build mismatch and Jacobian, then solve for Δx.
+        Build mismatch and Jacobian, then solve for Δx - |ΔV, Δδ|.
 
         Δx = [Δδ_non_slack; ΔV_PQ]
 
         Returns:
             delta_x : 1D numpy array (same length as state vector)
         """
-        # Make sure spec/calc are up to date
+        # make sure spec/calc are up to date
         self.build_spec_arrays(buses)
         self.build_calc_arrays(buses, Ybus)
 
-        # Build mismatch vector (column)
-        mismatch = self.build_mismatch_vector()   # shape (ns+npq, 1)
+        # mismatch vector (column)
+        mismatch = self.build_mismatch_vector()
 
-        # Build full Jacobian
+        # full Jacobian
         J = self.build_jacobian(buses, Ybus)
 
-        # Solve J * Δx = mismatch  (flatten mismatch to 1D)
+        # solve J * Δx = mismatch  (flatten mismatch to 1D)
         delta_x = np.linalg.solve(J, mismatch.flatten())
 
-        # Optional: store it
+        # store for optional use
         self.delta_x = delta_x
         return delta_x
-    
-    # Apply the solved unknown state to new state matrix ----------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Apply Δx to update bus angles and voltages
+    # -----------------------------------------------------------------------
     def apply_state_update(self, buses, delta_x):
         """
-        Apply Δx to update bus angles and voltages.
+        Apply Δx - |ΔV, Δδ| to update bus angles and voltages.
 
         delta_x is ordered as:
             [Δδ for non-slack buses,
-            ΔV for PQ buses]
+             ΔV for PQ buses]
         """
         ns = len(self.non_slack_buses)
         npq = len(self.pq_buses)
 
         d_delta = delta_x[:ns]
-        d_V     = delta_x[ns:ns+npq]
+        d_V = delta_x[ns:ns + npq]
 
-        # Update angles for non-slack buses
+        # update angles for non-slack buses
         for idx, b in enumerate(self.non_slack_buses):
             buses[b]["δ"] += d_delta[idx]
 
-        # Update voltages for PQ buses
+        # update voltages for PQ buses
         for idx, b in enumerate(self.pq_buses):
             buses[b]["V"] += d_V[idx]
 
 
 # create the object
-pv = PowerVariables()      
+pv = PowerVariables()
+
 
 def compute_bus_injections(buses, Ybus):
     """
@@ -842,13 +852,11 @@ def compute_bus_injections(buses, Ybus):
     P_i, Q_i > 0 means net generation at bus i.
     """
     n = len(buses)
-    
-    # Build complex V vector from buses dict
+
+    # build complex V vector from buses dict
     V = np.zeros(n, dtype=complex)
     for b, data in buses.items():
-        
-        # bus numbers are 1-based
-        idx = b - 1  
+        idx = b - 1
         V[idx] = data["V"] * np.exp(1j * data["δ"])
 
     G = Ybus.real
@@ -871,7 +879,10 @@ def compute_bus_injections(buses, Ybus):
 
 
 def print_bus_info():
-
+    """
+    Compute and print final bus voltages, angles, and injections.
+    Also writes results to final_bus_results.csv.
+    """
     P_pu, Q_pu = compute_bus_injections(buses, Ybus)
     table_rows = []
 
@@ -895,18 +906,22 @@ def print_bus_info():
             "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
             "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
         }
-        #print(f"rows-------", buses)
         table_rows.append(row)
+
     #df = pd.DataFrame(table_rows)
     #df.to_csv("final_bus_results.csv", index=False)
 
     #print("Saved results to final_bus_results.csv")
-    print("\nFinal Bus Voltages and Angles:")
-    print(tabulate(table_rows, headers="keys", tablefmt="grid"))
+    #print("\nFinal Bus Voltages and Angles:")
+    #print(tabulate(table_rows, headers="keys", tablefmt="grid"))
     return table_rows
 
-def run_iterations():
 
+def run_iterations():
+    """
+    Newton–Raphson power flow iterations for each tolerance in EPS.
+    Tracks mismatch and state updates, and plots convergence history.
+    """
     for tol in EPS:
         start = time.perf_counter()
         num = -1
@@ -918,6 +933,7 @@ def run_iterations():
         pv = PowerVariables()
         pv.set_converged(True)
         pv.convergence(False)
+
         delta_x = None
         max_dx = 1
         mismatch_history = []
@@ -927,86 +943,59 @@ def run_iterations():
         iteration_history_C = []
         iteration_history_D = []
         iteration_history_E = []
+
         for k in range(MAX_ITERS):
-            num+=1
-            #print_bus_info()
+            num += 1
+
             # 1–3: build spec, calc, mismatch
             pv.build_spec_arrays(buses)
             pv.build_calc_arrays(buses, Ybus)
-            
-            # column vector
-            mismatch = pv.build_mismatch_vector()   
-            #dP_red, dQ_red, V_mag = pv.build_reduced_mismatch_vectors(buses)
 
-            # --- FDLF state updates using B' and B'' ---
-            # |V| for non-slack buses (same order as pv.non_slack_buses)
-            #V_ns = np.array([V_mag[b - 1] for b in pv.non_slack_buses], dtype=float)
-            # |V| for PQ buses (same order as pv.pq_buses)
-            #V_pq = np.array([V_mag[b - 1] for b in pv.pq_buses], dtype=float)
+            mismatch = pv.build_mismatch_vector()  # column vector
 
-            # Right-hand sides: ΔP/|V| and ΔQ/|V|
-            #rhs_delta = dP_red / V_ns       # for angle updates
-            #rhs_V     = dQ_red / V_pq       # for voltage-magnitude updates
-
-            # Solve B' Δδ = ΔP/|V|, B'' ΔV = ΔQ/|V|
-            #delta_delta = np.linalg.solve(B_prime,        rhs_delta)
-            #delta_V     = np.linalg.solve(B_double_prime, rhs_V)
-
-            # Pack into a single Δx in the same layout as your NR solver expects:
-            # [Δδ for all non-slack buses; ΔV for all PQ buses]
-            #delta_x_fdlf = np.concatenate([delta_delta, delta_V])
-
-            # For now just inspect it:
-            #print("FDLF Δδ (non-slack):", delta_delta)
-            #print("FDLF ΔV (PQ):",       delta_V)
-
-            # 4: convergence check
+            # 4: convergence check based on mismatch
             max_mis = np.max(np.abs(mismatch))
             mismatch_history.append(max_mis)
-            
+
             if delta_x is not None:
                 dx_history.append(np.max(np.abs(delta_x)))
                 max_dx = np.max(np.abs(delta_x))
             print(f"Iter {k}: max mismatch = {max_mis}, [Δv, Δδ] = {max_dx}")
-            
-            # state-change-based check (skip on first iter, since delta_x is None)
+
+            # state-change-based check (skip on first iter)
             if delta_x is None:
-                #dx_history.append(None)
-                max_dx = float('inf')
+                max_dx = float("inf")
                 print("Iter 0: ΔV & Δδ not computed yet")
             else:
                 max_dx = np.max(np.abs(delta_x))
-                #k}: max Δx = {max_dx:.6e}")
 
+            # combined convergence criteria
             if (max_mis < tol) and (max_dx < tol):
-                print("Converged!", num, tol, max_mis )
+                print("Converged!", num, tol, max_mis)
                 pv.convergence(True)
 
-                # Convert to arrays
+                # convert history to arrays
                 mis = np.array(mismatch_history)
-                dx  = np.array(dx_history)
+                dx = np.array(dx_history)
 
                 # x-axis positions
-                iters_mis = np.arange(0, len(mis))       # start mismatch at iteration 0
-                iters_dx  = np.arange(1, len(mis))       # start delta-x at iteration 1
+                iters_mis = np.arange(0, len(mis))  # mismatch starts at iteration 0
+                iters_dx = np.arange(1, len(mis))   # Δx starts at iteration 1
 
-                plt.figure(figsize=(8,5))
-
-                # mismatch history
-                plt.plot(iters_mis, mis, marker='o', label='Max Mismatch |ΔP, ΔQ|')
-                plt.plot(iters_dx, dx, marker='s', color='orange', label='Max State Update |Δx|')
-                plt.yscale('log')
-                plt.xlabel('Iteration Number')
-                plt.ylabel('ΔP, ΔQ, ΔV, & Δδ (log scale)')
-                plt.grid(True, which='both', linestyle='--', linewidth=0.6)
-
-                # Title
-                plt.title(f'N-R Power Flow Convergence vs Iterations Using ε={tol}')
-                plt.legend(loc='upper right')
+                plt.figure(figsize=(8, 5))
+                plt.plot(iters_mis, mis, marker="o", label="Max Mismatch |ΔP, ΔQ|")
+                plt.plot(iters_dx, dx, marker="s", color="orange", label="Max State Update |ΔV, Δδ|")
+                plt.yscale("log")
+                plt.xlabel("Iteration Number")
+                plt.ylabel("ΔP, ΔQ, ΔV, & Δδ (log scale)")
+                plt.grid(True, which="both", linestyle="--", linewidth=0.6)
+                plt.title(f"N-R Power Flow Convergence vs Iterations Using ε={tol}")
+                plt.legend(loc="upper right")
                 plt.show()
-                
+                end = time.perf_counter()
+                print(f"\nN-R iterations time: {end - start:.6f} seconds taking {(end - start)/num:.6f} seconds per iteration \n")
                 break
-                
+
             # 5: build Jacobian
             J = pv.build_jacobian(buses, Ybus)
 
@@ -1015,23 +1004,26 @@ def run_iterations():
 
             # 7: apply update to buses
             pv.apply_state_update(buses, delta_x)
+
+            # track per-bus per-iteration results
             P_pu, Q_pu = compute_bus_injections(buses, Ybus)
             for b, data in buses.items():
-                idx = b-1
+                idx = b - 1
                 P_inj_pu = P_pu[idx]
                 Q_inj_pu = Q_pu[idx]
                 info = {
-                        "Bus": b,
-                        "Name": data["name"],
-                        "Type": data["type"],
-                        "Iter": k + 1,        # iteration number (start at 1)
-                        "V (pu)": float(data["V"]),
-                        "δ (deg)": float(np.degrees(data["δ"])),
-                        "P_inj (pu)": f"{P_inj_pu:.4f}",
-                        "Q_inj (pu)": f"{Q_inj_pu:.4f}",
-                        "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
-                        "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
-                    }
+                    "Bus": b,
+                    "Name": data["name"],
+                    "Type": data["type"],
+                    # iteration number (start at 1)
+                    "Iter": k + 1,
+                    "V (pu)": float(data["V"]),
+                    "δ (deg)": float(np.degrees(data["δ"])),
+                    "P_inj (pu)": f"{P_inj_pu:.4f}",
+                    "Q_inj (pu)": f"{Q_inj_pu:.4f}",
+                    "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
+                    "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
+                }
                 match data["name"]:
                     case "Alan":
                         iteration_history_A.append(info)
@@ -1041,21 +1033,22 @@ def run_iterations():
                         iteration_history_C.append(info)
                     case "Doug":
                         iteration_history_D.append(info)
-                    case _:  # Default case
+                    case _:
                         iteration_history_E.append(info)
-        
-        #print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"),"\n")
-        #print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"),"\n")
-        #print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"),"\n")
-        #print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"),"\n")
-        #print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"),"\n")
+
+        print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"), "\n")
+        print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"), "\n")
+        print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"), "\n")
+        print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"), "\n")
+        print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"), "\n")
+
         if pv.get_convergence_status() is False:
             print(f"Did not converge within MAX_ITERS at {MAX_ITERS} with ε={tol}")
-        end = time.perf_counter()
-        print(f"\nN-R iterations time: {end - start:.6f} seconds taking {(end - start)/num:.6f} seconds per iteration ")
-                #if data["name"] == "Alan":
-                #    iteration_history_A.append(info)
-                #else if data["name"] == "Betty":
+
+        #df = pd.DataFrame(iteration_history_A)
+        #df.to_csv(f"tabulated_bus_results{tol}.csv", index=False)
+
+
 def run_fdlf():
     """
     Fast Decoupled Load Flow (FDLF) solver.
@@ -1067,7 +1060,6 @@ def run_fdlf():
             B'  Δδ = ΔP_red / |V|_non_slack
             B'' ΔV = ΔQ_red / |V|_PQ
     """
-    
     for tol in EPS:
         num = 0
         start_fdlf = time.perf_counter()
@@ -1088,7 +1080,7 @@ def run_fdlf():
         dx_history = []
 
         delta_delta = None   # FDLF angle updates
-        delta_V     = None   # FDLF voltage-magnitude updates
+        delta_V = None       # FDLF voltage-magnitude updates
 
         for k in range(MAX_ITERS):
             # 1–2: build spec and calc arrays from current buses
@@ -1098,7 +1090,7 @@ def run_fdlf():
             # 3: reduced mismatches for FDLF
             dP_red, dQ_red, V_mag = pv.build_reduced_mismatch_vectors(buses)
 
-            # --- compute max mismatch (use reduced ΔP, ΔQ) ---
+            # compute max mismatch (use reduced ΔP, ΔQ)
             max_mis = 0.0
             if dP_red.size > 0:
                 max_mis = max(max_mis, np.max(np.abs(dP_red)))
@@ -1106,22 +1098,22 @@ def run_fdlf():
                 max_mis = max(max_mis, np.max(np.abs(dQ_red)))
             mismatch_history.append(max_mis)
 
-            # --- build |V| vectors for non-slack and PQ buses ---
+            # build |V| vectors for non-slack and PQ buses
             V_ns = np.array([V_mag[b - 1] for b in pv.non_slack_buses], dtype=float)
-            V_pq = np.array([V_mag[b - 1] for b in pv.pq_buses],        dtype=float)
+            V_pq = np.array([V_mag[b - 1] for b in pv.pq_buses], dtype=float)
 
-            # --- right-hand sides: ΔP/|V| and ΔQ/|V| ---
+            # right-hand sides: ΔP/|V| and ΔQ/|V|
             rhs_delta = dP_red / V_ns       # for angle updates
-            rhs_V     = dQ_red / V_pq       # for voltage updates
+            rhs_V = dQ_red / V_pq           # for voltage updates
 
-            # --- solve FDLF linear systems ---
-            delta_delta = np.linalg.solve(B_prime,        rhs_delta)
-            delta_V     = np.linalg.solve(B_double_prime, rhs_V)
+            # solve FDLF linear systems
+            delta_delta = np.linalg.solve(B_prime, rhs_delta)
+            delta_V = np.linalg.solve(B_double_prime, rhs_V)
 
             # pack into single Δx in same layout as NR: [Δδ_non_slack; ΔV_PQ]
             delta_x_fdlf = np.concatenate([delta_delta, delta_V])
 
-            # --- state update magnitude ---
+            # state update magnitude
             max_dx = 0.0
             if delta_delta.size > 0:
                 max_dx = max(max_dx, np.max(np.abs(delta_delta)))
@@ -1130,43 +1122,44 @@ def run_fdlf():
             dx_history.append(max_dx)
 
             print(f"Iter {k}: max mismatch = {max_mis:.6e}, max [Δv, Δδ] = {max_dx:.6e}")
-            num+=1
-            # --- convergence check ---
+            num += 1
+
+            # convergence check
             if (max_mis < tol) and (max_dx < tol):
                 print(f"FDLF Converged in {k+1} iterations with ε={tol}")
                 pv.convergence(True)
 
                 # convert lists to arrays for plotting
                 mis = np.array(mismatch_history)
-                dx  = np.array(dx_history)
+                dx = np.array(dx_history)
                 iters = np.arange(1, len(mis) + 1)
 
-                plt.figure(figsize=(8,5))
-                plt.plot(iters, mis, marker='o', label='FDLF Max Mismatch |ΔP, ΔQ|')
-                plt.plot(iters, dx,  marker='s', label='FDLF Max State Update |Δδ, ΔV|')
-                plt.yscale('log')
-                plt.xlabel('Iteration Number')
-                plt.ylabel('Magnitude (log scale)')
-                plt.grid(True, which='both', linestyle='--', linewidth=0.6)
-                plt.title(f'FDLF Convergence vs Iterations (ε={tol})')
-                plt.legend(loc='upper right')
+                plt.figure(figsize=(8, 5))
+                plt.plot(iters, mis, marker="o", label="FDLF Max Mismatch |ΔP, ΔQ|")
+                plt.plot(iters, dx, marker="s", label="FDLF Max State Update |ΔV, Δδ|")
+                plt.yscale("log")
+                plt.xlabel("Iteration Number")
+                plt.ylabel("Magnitude (log scale)")
+                plt.grid(True, which="both", linestyle="--", linewidth=0.6)
+                plt.title(f"FDLF Convergence vs Iterations (ε={tol})")
+                plt.legend(loc="upper right")
                 plt.show()
-
+                end_fdlf = time.perf_counter()
+                print(f"\nFDLF iteration time: {end_fdlf - start_fdlf:.6f} seconds taking {(end_fdlf - start_fdlf)/num:.6f} seconds per iteration\n")
                 break
 
-            # --- apply FDLF state update to buses ---
+            # apply FDLF state update to buses
             pv.apply_state_update(buses, delta_x_fdlf)
 
         if pv.get_convergence_status() is False:
             print(f"FDLF did not converge within MAX_ITERS={MAX_ITERS} for ε={tol}")
-        end_fdlf = time.perf_counter()
-        print(f"\nFDLF iterations time: {end_fdlf - start_fdlf:.6f} seconds taking {(end_fdlf - start_fdlf)/num:.6f} seconds per iteration ")
-        #df = pd.DataFrame(iteration_history)
-        #df.to_csv(f"tabulated_bus_results{tol}.csv", index=False)
-            
-    #print(tabulate(iteration_history, headers="keys", tablefmt="grid"),"\n")
-    #print(buses,"\n")
-    #print_bus_info()
+
+        
+
+
+# ---------------------------------------------------------------------------
+# Main execution: run NR and FDLF and report timing
+# ---------------------------------------------------------------------------
 start = time.perf_counter()
 run_iterations()
 end = time.perf_counter()
@@ -1174,6 +1167,8 @@ end = time.perf_counter()
 start_fdlf = time.perf_counter()
 run_fdlf()
 end_fdlf = time.perf_counter()
-print(f"\nN-R iterations time: {end - start:.6f} seconds")
-print(f"\nFDLF iterations time: {end_fdlf - start_fdlf:.6f} seconds {(end_fdlf - start_fdlf)/10:.6f}")
+print(f"\nN-R total iterations time: {end - start:.6f} seconds")
+print(f"\nFDLF total iterations time: {end_fdlf - start_fdlf:.6f} seconds")
+
+
 # %%
