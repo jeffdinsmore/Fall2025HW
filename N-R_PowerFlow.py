@@ -933,7 +933,7 @@ def run_iterations():
                         "Type": data["type"],
                         "Iter": k + 1,        # iteration number (start at 1)
                         "V (pu)": float(data["V"]),
-                        "Angle (deg)": float(np.degrees(data["δ"])),
+                        "δ (deg)": float(np.degrees(data["δ"])),
                         "P_inj (pu)": f"{P_inj_pu:.4f}",
                         "Q_inj (pu)": f"{Q_inj_pu:.4f}",
                         "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
