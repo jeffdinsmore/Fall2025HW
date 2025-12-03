@@ -12,6 +12,7 @@ Author: Jeff Dinsmore
 """
 #%%
 import numpy as np
+import time
 import math
 import cmath
 import pandas as pd
@@ -22,7 +23,7 @@ import copy
 
 # --- tolerances / iteration ---
 #EPS = [1e-4]
-EPS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]  # mismatch tolerance (pu)
+EPS = [1e-2, 1e-4, 1e-6]  # mismatch tolerance (pu)
 #k = 0       # NR iteration counter
 MAX_ITERS = 20
 
@@ -178,6 +179,7 @@ Z = load_line_data("FiveBus_PQ", name_map)
 # --- flat start values ---
 delta = np.array([0.0, 0.0])   # σ2, σ3 (bus angles in radians excluding slack)
 V = np.array([1.0, 1.01])      # V2, V3 magnitudes
+
 # after loading buses from the file and setting flat start δ = 0, V from file
 buses_flat_start = copy.deepcopy(buses)
 
@@ -235,7 +237,7 @@ Ybus = build_Ybus(Z)
 # B_full is the susceptance matrix used as the starting point
 # for B' and B'' in Fast Decoupled Load Flow.
 B_full = -np.imag(Ybus)
-print(f"[INFO] Your B (susceptance) matrix for FDLF is: \n{B_full}\n")
+#print(f"[INFO] Your B (susceptance) matrix for FDLF is: \n{B_full}\n")
 
 def build_B_prime_and_B_double_prime(B_full, buses):
     """
@@ -475,6 +477,30 @@ class PowerVariables:
         # stack into a column vector [ΔP; ΔQ]
         mismatch = np.concatenate([deltaP, deltaQ]).reshape(-1, 1)
         return mismatch
+
+    def build_reduced_mismatch_vectors(self, buses):
+        """
+        Return reduced mismatch vectors (ΔP and ΔQ) for FDLF.
+
+        dP_red : ΔP for non-slack buses (same order as self.non_slack_buses)
+        dQ_red : ΔQ for PQ buses       (same order as self.pq_buses)
+        V_mag  : |V| for each bus (full vector, length = number of buses)
+        """
+
+        # These are ALREADY reduced:
+        #   P_spec, P_calc : non-slack buses only
+        #   Q_spec, Q_calc : PQ buses only
+        dP_red = self.P_spec - self.P_calc
+        dQ_red = self.Q_spec - self.Q_calc
+
+        # Full |V| vector from current bus data
+        bus_nums = sorted(buses.keys())
+        V_mag = np.array([buses[b]["V"] for b in bus_nums], dtype=float)
+
+        return dP_red, dQ_red, V_mag
+
+
+
 
     # Build unknown matrix -----------------------------------------------------------------------------------
     def build_state_vector(self, buses):
@@ -882,6 +908,7 @@ def print_bus_info():
 def run_iterations():
 
     for tol in EPS:
+        start = time.perf_counter()
         num = -1
         print("\n======================== Running NR with EPS =", tol, "========================")
 
@@ -909,6 +936,29 @@ def run_iterations():
             
             # column vector
             mismatch = pv.build_mismatch_vector()   
+            #dP_red, dQ_red, V_mag = pv.build_reduced_mismatch_vectors(buses)
+
+            # --- FDLF state updates using B' and B'' ---
+            # |V| for non-slack buses (same order as pv.non_slack_buses)
+            #V_ns = np.array([V_mag[b - 1] for b in pv.non_slack_buses], dtype=float)
+            # |V| for PQ buses (same order as pv.pq_buses)
+            #V_pq = np.array([V_mag[b - 1] for b in pv.pq_buses], dtype=float)
+
+            # Right-hand sides: ΔP/|V| and ΔQ/|V|
+            #rhs_delta = dP_red / V_ns       # for angle updates
+            #rhs_V     = dQ_red / V_pq       # for voltage-magnitude updates
+
+            # Solve B' Δδ = ΔP/|V|, B'' ΔV = ΔQ/|V|
+            #delta_delta = np.linalg.solve(B_prime,        rhs_delta)
+            #delta_V     = np.linalg.solve(B_double_prime, rhs_V)
+
+            # Pack into a single Δx in the same layout as your NR solver expects:
+            # [Δδ for all non-slack buses; ΔV for all PQ buses]
+            #delta_x_fdlf = np.concatenate([delta_delta, delta_V])
+
+            # For now just inspect it:
+            #print("FDLF Δδ (non-slack):", delta_delta)
+            #print("FDLF ΔV (PQ):",       delta_V)
 
             # 4: convergence check
             max_mis = np.max(np.abs(mismatch))
@@ -917,7 +967,7 @@ def run_iterations():
             if delta_x is not None:
                 dx_history.append(np.max(np.abs(delta_x)))
                 max_dx = np.max(np.abs(delta_x))
-            #print(f"Iter {k}: max mismatch = {max_mis}\nIter {k}: Δx = {max_dx}")
+            print(f"Iter {k}: max mismatch = {max_mis}, [Δv, Δδ] = {max_dx}")
             
             # state-change-based check (skip on first iter, since delta_x is None)
             if delta_x is None:
@@ -993,7 +1043,7 @@ def run_iterations():
                         iteration_history_D.append(info)
                     case _:  # Default case
                         iteration_history_E.append(info)
-
+        
         #print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"),"\n")
         #print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"),"\n")
         #print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"),"\n")
@@ -1001,18 +1051,129 @@ def run_iterations():
         #print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"),"\n")
         if pv.get_convergence_status() is False:
             print(f"Did not converge within MAX_ITERS at {MAX_ITERS} with ε={tol}")
+        end = time.perf_counter()
+        print(f"\nN-R iterations time: {end - start:.6f} seconds taking {(end - start)/num:.6f} seconds per iteration ")
                 #if data["name"] == "Alan":
                 #    iteration_history_A.append(info)
                 #else if data["name"] == "Betty":
+def run_fdlf():
+    """
+    Fast Decoupled Load Flow (FDLF) solver.
+    Structure is similar to run_iterations(), but:
 
-                    
+      - Uses reduced ΔP, ΔQ
+      - Uses B' and B'' instead of full Jacobian
+      - Solves:
+            B'  Δδ = ΔP_red / |V|_non_slack
+            B'' ΔV = ΔQ_red / |V|_PQ
+    """
+    
+    for tol in EPS:
+        num = 0
+        start_fdlf = time.perf_counter()
+        print("\n======================== Running FDLF with EPS =", tol, "========================")
+
+        # reset buses to flat start for this tolerance
+        buses = copy.deepcopy(buses_flat_start)
+
+        # build B' and B'' once (based on the network topology / bus types)
+        B_prime, B_double_prime, _, _ = build_B_prime_and_B_double_prime(B_full, buses)
+
+        pv = PowerVariables()
+        pv.set_converged(True)
+        pv.convergence(False)
+
+        max_dx = 1.0
+        mismatch_history = []
+        dx_history = []
+
+        delta_delta = None   # FDLF angle updates
+        delta_V     = None   # FDLF voltage-magnitude updates
+
+        for k in range(MAX_ITERS):
+            # 1–2: build spec and calc arrays from current buses
+            pv.build_spec_arrays(buses)
+            pv.build_calc_arrays(buses, Ybus)
+
+            # 3: reduced mismatches for FDLF
+            dP_red, dQ_red, V_mag = pv.build_reduced_mismatch_vectors(buses)
+
+            # --- compute max mismatch (use reduced ΔP, ΔQ) ---
+            max_mis = 0.0
+            if dP_red.size > 0:
+                max_mis = max(max_mis, np.max(np.abs(dP_red)))
+            if dQ_red.size > 0:
+                max_mis = max(max_mis, np.max(np.abs(dQ_red)))
+            mismatch_history.append(max_mis)
+
+            # --- build |V| vectors for non-slack and PQ buses ---
+            V_ns = np.array([V_mag[b - 1] for b in pv.non_slack_buses], dtype=float)
+            V_pq = np.array([V_mag[b - 1] for b in pv.pq_buses],        dtype=float)
+
+            # --- right-hand sides: ΔP/|V| and ΔQ/|V| ---
+            rhs_delta = dP_red / V_ns       # for angle updates
+            rhs_V     = dQ_red / V_pq       # for voltage updates
+
+            # --- solve FDLF linear systems ---
+            delta_delta = np.linalg.solve(B_prime,        rhs_delta)
+            delta_V     = np.linalg.solve(B_double_prime, rhs_V)
+
+            # pack into single Δx in same layout as NR: [Δδ_non_slack; ΔV_PQ]
+            delta_x_fdlf = np.concatenate([delta_delta, delta_V])
+
+            # --- state update magnitude ---
+            max_dx = 0.0
+            if delta_delta.size > 0:
+                max_dx = max(max_dx, np.max(np.abs(delta_delta)))
+            if delta_V.size > 0:
+                max_dx = max(max_dx, np.max(np.abs(delta_V)))
+            dx_history.append(max_dx)
+
+            print(f"Iter {k}: max mismatch = {max_mis:.6e}, max [Δv, Δδ] = {max_dx:.6e}")
+            num+=1
+            # --- convergence check ---
+            if (max_mis < tol) and (max_dx < tol):
+                print(f"FDLF Converged in {k+1} iterations with ε={tol}")
+                pv.convergence(True)
+
+                # convert lists to arrays for plotting
+                mis = np.array(mismatch_history)
+                dx  = np.array(dx_history)
+                iters = np.arange(1, len(mis) + 1)
+
+                plt.figure(figsize=(8,5))
+                plt.plot(iters, mis, marker='o', label='FDLF Max Mismatch |ΔP, ΔQ|')
+                plt.plot(iters, dx,  marker='s', label='FDLF Max State Update |Δδ, ΔV|')
+                plt.yscale('log')
+                plt.xlabel('Iteration Number')
+                plt.ylabel('Magnitude (log scale)')
+                plt.grid(True, which='both', linestyle='--', linewidth=0.6)
+                plt.title(f'FDLF Convergence vs Iterations (ε={tol})')
+                plt.legend(loc='upper right')
+                plt.show()
+
+                break
+
+            # --- apply FDLF state update to buses ---
+            pv.apply_state_update(buses, delta_x_fdlf)
+
+        if pv.get_convergence_status() is False:
+            print(f"FDLF did not converge within MAX_ITERS={MAX_ITERS} for ε={tol}")
+        end_fdlf = time.perf_counter()
+        print(f"\nFDLF iterations time: {end_fdlf - start_fdlf:.6f} seconds taking {(end_fdlf - start_fdlf)/num:.6f} seconds per iteration ")
         #df = pd.DataFrame(iteration_history)
         #df.to_csv(f"tabulated_bus_results{tol}.csv", index=False)
             
     #print(tabulate(iteration_history, headers="keys", tablefmt="grid"),"\n")
     #print(buses,"\n")
     #print_bus_info()
+start = time.perf_counter()
 run_iterations()
+end = time.perf_counter()
 
-
+start_fdlf = time.perf_counter()
+run_fdlf()
+end_fdlf = time.perf_counter()
+print(f"\nN-R iterations time: {end - start:.6f} seconds")
+print(f"\nFDLF iterations time: {end_fdlf - start_fdlf:.6f} seconds {(end_fdlf - start_fdlf)/10:.6f}")
 # %%
