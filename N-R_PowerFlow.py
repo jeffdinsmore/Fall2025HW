@@ -230,6 +230,49 @@ def build_Ybus(Z, n=None):
 
 # build Y-bus -----------------------------------------------
 Ybus = build_Ybus(Z)
+
+# --- Build B matrix for FDLF use (keep Ybus intact) ---
+# B_full is the susceptance matrix used as the starting point
+# for B' and B'' in Fast Decoupled Load Flow.
+B_full = -np.imag(Ybus)
+print(f"[INFO] Your B (susceptance) matrix for FDLF is: \n{B_full}\n")
+
+def build_B_prime_and_B_double_prime(B_full, buses):
+    """
+    Build reduced B' (for angles) and B'' (for voltages) 
+    for Fast Decoupled Load Flow.
+
+    B'  -> uses all NON-SLACK buses (PV + PQ).
+    B'' -> uses only PQ buses.
+
+    buses: dict like {1: {"type": SLACK/PV/PQ, ...}, ...}
+    """
+    bus_nums = sorted(buses.keys())
+
+    # identify slack, non-slack, PQ buses
+    slack_bus = next(b for b in bus_nums if buses[b]["type"] == "SL")
+    non_slack_buses = [b for b in bus_nums if b != slack_bus]
+    pq_buses        = [b for b in bus_nums if buses[b]["type"] == "PQ"]
+
+    # map bus numbers -> 0-based indices for B_full
+    non_slack_idx = [b - 1 for b in non_slack_buses]
+    pq_idx        = [b - 1 for b in pq_buses]
+
+    # B' : submatrix for non-slack buses (angles)
+    B_prime = B_full[np.ix_(non_slack_idx, non_slack_idx)]
+
+    # B'': submatrix for PQ buses (voltages)
+    B_double_prime = B_full[np.ix_(pq_idx, pq_idx)]
+
+    return B_prime, B_double_prime, non_slack_buses, pq_buses
+
+B_prime, B_double_prime, non_slack_buses, pq_buses = build_B_prime_and_B_double_prime(B_full, buses)
+
+print("[INFO] B' (for angles, non-slack buses):")
+print(B_prime)
+print("\n[INFO] B'' (for voltages, PQ buses):")
+print(B_double_prime)
+
 #print(f"[INFO] Your Ybus matrix is: \n{Ybus}\n")
 def display_Ybus(Ybus):
     rows = []
@@ -951,11 +994,11 @@ def run_iterations():
                     case _:  # Default case
                         iteration_history_E.append(info)
 
-        print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"),"\n")
-        print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"),"\n")
-        print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"),"\n")
-        print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"),"\n")
-        print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"),"\n")
+        #print(tabulate(iteration_history_A, headers="keys", tablefmt="grid"),"\n")
+        #print(tabulate(iteration_history_B, headers="keys", tablefmt="grid"),"\n")
+        #print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"),"\n")
+        #print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"),"\n")
+        #print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"),"\n")
         if pv.get_convergence_status() is False:
             print(f"Did not converge within MAX_ITERS at {MAX_ITERS} with ε={tol}")
                 #if data["name"] == "Alan":
