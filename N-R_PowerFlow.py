@@ -278,11 +278,6 @@ def build_B_prime_and_B_double_prime(B_full, buses):
 
 B_prime, B_double_prime, non_slack_buses, pq_buses = build_B_prime_and_B_double_prime(B_full, buses)
 
-print("[INFO] B' (for angles, non-slack buses):")
-print(B_prime)
-print("\n[INFO] B'' (for voltages, PQ buses):")
-print(B_double_prime)
-
 
 def display_Ybus(Ybus):
     """Pretty-print the Y-bus in rectangular form."""
@@ -878,7 +873,7 @@ def compute_bus_injections(buses, Ybus):
     return P, Q
 
 
-def print_bus_info():
+def print_bus_info(buses):
     """
     Compute and print final bus voltages, angles, and injections.
     Also writes results to final_bus_results.csv.
@@ -912,9 +907,9 @@ def print_bus_info():
     #df.to_csv("final_bus_results.csv", index=False)
 
     #print("Saved results to final_bus_results.csv")
-    #print("\nFinal Bus Voltages and Angles:")
-    #print(tabulate(table_rows, headers="keys", tablefmt="grid"))
-    return table_rows
+    print("\nFinal Bus Voltages and Angles:")
+    print(tabulate(table_rows, headers="keys", tablefmt="grid"))
+    #return table_rows
 
 
 def run_iterations():
@@ -943,6 +938,7 @@ def run_iterations():
         iteration_history_C = []
         iteration_history_D = []
         iteration_history_E = []
+        iteration_history = []
 
         for k in range(MAX_ITERS):
             num += 1
@@ -971,9 +967,8 @@ def run_iterations():
 
             # combined convergence criteria
             if (max_mis < tol) and (max_dx < tol):
-                print("Converged!", num, tol, max_mis)
                 pv.convergence(True)
-
+                print(f"N-R Converged in {k+1} iterations with ε={tol}")
                 # convert history to arrays
                 mis = np.array(mismatch_history)
                 dx = np.array(dx_history)
@@ -994,6 +989,7 @@ def run_iterations():
                 plt.show()
                 end = time.perf_counter()
                 print(f"\nN-R iterations time: {end - start:.6f} seconds taking {(end - start)/num:.6f} seconds per iteration \n")
+                #print_bus_info(buses)
                 break
 
             # 5: build Jacobian
@@ -1024,6 +1020,7 @@ def run_iterations():
                     "P_inj (MW)": f"{P_inj_pu * baseMVA:.1f}",
                     "Q_inj (MVAr)": f"{Q_inj_pu * baseMVA:.1f}",
                 }
+                iteration_history.append(info)
                 match data["name"]:
                     case "Alan":
                         iteration_history_A.append(info)
@@ -1041,7 +1038,8 @@ def run_iterations():
         print(tabulate(iteration_history_C, headers="keys", tablefmt="grid"), "\n")
         print(tabulate(iteration_history_D, headers="keys", tablefmt="grid"), "\n")
         print(tabulate(iteration_history_E, headers="keys", tablefmt="grid"), "\n")
-
+        print(tabulate(iteration_history, headers="keys", tablefmt="grid"), "\n")
+        
         if pv.get_convergence_status() is False:
             print(f"Did not converge within MAX_ITERS at {MAX_ITERS} with ε={tol}")
 
