@@ -25,19 +25,24 @@ from scipy.optimize import fsolve
 from matplotlib.ticker import MultipleLocator
 
 def torque_slip_curve(
-    V_LL = 220,              # V
+    V_LL = 220,                   # V
     p = 4,
     f_list = [50, 60, 70, 80],    # Hz
-    R1 = 0.1,                # Ohms
+    R1 = 0.1,                     # Ohms
     R2 = 0.15,
-    L1 = 0.447,              # mH
-    L2 = 0.637,
-    Lm = 9.5,
+    L1 = 0.447e-3,                # H
+    L2 = 0.637e-3,
+    Lm = 9.5e-3,
     Rm = np.inf,
     s_min=0.00001,
     s_max=1.0,
     num_points=1000,
 ):
+    # Rated point for V/Hz control
+    VLL_rated = 220.0   # line-to-line voltage at 60 Hz
+    f_rated   = 60.0
+    V_per_Hz  = VLL_rated / f_rated    # ≈ 3.67 V/Hz
+
     plt.figure(figsize=(10,6))
 
     torque_data = {}   # store curves for second plot
@@ -83,10 +88,9 @@ def torque_slip_curve(
         I2 = V_th / (Z_th + Z2_s)
         
         # Electromagnetic torque:
-        # Air-gap power Pag = 3 |I2|^2 (R2 / s)
-        # Mechanical power (neglecting losses) Pmech = Pag * (1 - s)
-        # Torque T = Pmech / w_sync
-        P_gap = 3 * (np.abs(I2) ** 2) * (R2 / s)
+        # Air-gap power Pag = 3 |I2|^2 (R2 / s) (Watts not pu)
+        # Torque T = P_gap / w_sync
+        P_gap = 3 * (np.abs(I2) ** 2) * (R2 / s)    # W
         T = P_gap / w_sync  # N·m
         
         # save for second plot
@@ -132,7 +136,7 @@ def torque_slip_curve(
 
 if __name__ == "__main__":
     # Your specific motor:
-    # R1 = 0.1 Ω, R2 = 0.15 Ω
+    # R1 = 0.1 Ω, R2 = 0.15 Ω, Rm = infinity Ω
     # L1 = 0.447 mH, L2 = 0.637 mH, Lm = 9.5 mH
     torque_slip_curve(
         V_LL=220.0,
