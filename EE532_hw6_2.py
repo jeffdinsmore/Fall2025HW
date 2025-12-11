@@ -2,7 +2,7 @@
     Equations used are from the lecture notes and the book "Electric
     Machinery and Power System Fundamentals" by Stephen J. Chapman
 
-    Created: 12/03/2025
+    Created: 12/11/2025
 
     Author: Jeff Dinsmore
 
@@ -69,9 +69,9 @@ def torque_slip_curve(
         V_th = V_phase * (Zm / (Z1 + Zm))
 
         # Synchronous mechanical speed (rad/s)
-        # nsync (rpm) = 120 f / p  ->  omega_sync = 2π nsync / 60
-        # Simplifies to: omega_sync = 4π f / p
-        omega_sync = 4 * np.pi * f / p
+        # nsync (rpm) = 120 f / p  ->  w_sync = 2π nsync / 60
+        # Simplifies to: w_sync = 4π f / p
+        w_sync = 4 * np.pi * f / p
 
         # Slip vector (avoid s = 0)
         s = np.linspace(s_min, s_max, num_points)
@@ -81,14 +81,14 @@ def torque_slip_curve(
 
         # Rotor current from Thevenin source
         I2 = V_th / (Z_th + Z2_s)
-
+        
         # Electromagnetic torque:
         # Air-gap power Pag = 3 |I2|^2 (R2 / s)
         # Mechanical power (neglecting losses) Pmech = Pag * (1 - s)
-        # Torque T = Pmech / omega_sync
+        # Torque T = Pmech / w_sync
         P_gap = 3 * (np.abs(I2) ** 2) * (R2 / s)
-        T = P_gap / omega_sync  # N·m
-
+        T = P_gap / w_sync  # N·m
+        
         # save for second plot
         n_sync = 120 * f / p
         n_mech = (1 - s) * n_sync
